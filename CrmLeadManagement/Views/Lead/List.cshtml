@@ -8,11 +8,34 @@
         <h1>Lead List</h1>
         <p>All incoming leads across every source, in one place.</p>
     </div>
-    <div class="action-toolbar">
+    <div class="action-toolbar" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        @if (ViewBag.MaxLeads != null)
+        {
+            <div style="background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8;padding:6px 12px;border-radius:8px;font-size:12.5px;font-weight:700;display:inline-flex;align-items:center;gap:6px;">
+                <i class="bi bi-person-lines-fill"></i>
+                <span>Leads: <strong style="color:@(ViewBag.IsLimitReached == true ? "#dc2626" : "#1d4ed8");">@ViewBag.CurrentLeadsCount / @ViewBag.MaxLeads</strong></span>
+            </div>
+        }
         <button class="btn btn-outline"><i class="bi bi-download"></i> Export</button>
         <button type="button" class="btn btn-primary" onclick="openAddLeadModal()"><i class="bi bi-plus-lg"></i> Add Lead</button>
     </div>
 </div>
+
+@if (ViewBag.IsLimitReached == true)
+{
+    <div style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:12px 18px;border-radius:10px;margin-bottom:18px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+        <div style="display:flex;align-items:center;gap:10px;">
+            <i class="bi bi-exclamation-triangle-fill" style="font-size:20px;color:#d97706;"></i>
+            <div>
+                <strong>Lead Quota Limit Reached (@ViewBag.CurrentLeadsCount / @ViewBag.MaxLeads Leads)</strong>
+                <div style="font-size:12.5px;color:#78350f;">You have reached the maximum number of leads permitted by your current subscription plan. Upgrade your plan to capture and manage more leads.</div>
+            </div>
+        </div>
+        <a asp-controller="Subscription" asp-action="Index" class="btn btn-sm" style="background:#d97706;color:#ffffff;font-weight:700;padding:6px 14px;border-radius:6px;text-decoration:none;">
+            <i class="bi bi-arrow-up-circle-fill"></i> Upgrade Plan
+        </a>
+    </div>
+}
 
 <div class="stat-grid">
     <div class="stat-card">
@@ -184,6 +207,11 @@
 }
 
 @await Html.PartialAsync("_LeadFormModal")
+@await Html.PartialAsync("_QuotaUpgradeModal")
+
+<script>
+    window.leadQuotaReached = @(ViewBag.IsLimitReached == true ? "true" : "false");
+</script>
 
 @functions {
     string StatusBadge(string? status)

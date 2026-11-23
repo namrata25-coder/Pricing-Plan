@@ -32,8 +32,9 @@ public class ClientsApiController : ControllerBase
     {
         try
         {
-            var leads = await _db.Leads.AsNoTracking().ToListAsync();
-            var projects = await _db.WorkProjects.AsNoTracking().ToListAsync();
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var leads = await LeadDataScope.ScopedLeadsQuery(_db, User).AsNoTracking().ToListAsync();
+            var projects = await WorkDataScope.Projects(_db, currentUser).AsNoTracking().ToListAsync();
 
             var clientMap = new Dictionary<string, ClientLookupDto>(StringComparer.OrdinalIgnoreCase);
 
@@ -114,7 +115,8 @@ public class ClientsApiController : ControllerBase
         try
         {
             var decoded = Uri.UnescapeDataString(clientName).Trim();
-            var projects = await _db.WorkProjects
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var projects = await WorkDataScope.Projects(_db, currentUser)
                 .Include(p => p.Milestones)
                 .Include(p => p.Invoices)
                 .Where(p => 
@@ -122,6 +124,11 @@ public class ClientsApiController : ControllerBase
                     string.Equals(p.ClientCompany, decoded, StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(p => p.Id)
                 .ToListAsync();
+
+            foreach (var project in projects)
+            {
+                WorkDataScope.RestrictProjectContents(project, currentUser);
+            }
 
             return Ok(projects);
         }

@@ -21,6 +21,10 @@ public class Lead
     public string? AssignedDate { get; set; } = "";
     public string? Remarks { get; set; }
 
+    // SaaS Multi-tenancy
+    public int? AdminId { get; set; }
+    public string? AdminCode { get; set; }
+
     public List<CallHistoryEntry> CallHistory { get; set; } = new();
     public List<FollowUpEntry> FollowUps { get; set; } = new();
     public List<RequirementEntry> Requirements { get; set; } = new();
@@ -133,6 +137,7 @@ public class FinanceLineItem
 public class EstimationEntry
 {
     public int Id { get; set; }
+    public int? AdminId { get; set; }
     public string? Number { get; set; } = "";           // e.g. EST-2001
     public string? Date { get; set; } = "";
     public string? LeadCustomer { get; set; } = "";      // display copy of the lead's name/company at save time
@@ -159,6 +164,7 @@ public class EstimationEntry
 public class QuotationEntry
 {
     public int Id { get; set; }
+    public int? AdminId { get; set; }
     public string? Number { get; set; } = "";           // e.g. QUO-2001
     public string? Date { get; set; } = "";
     public string? LeadCustomer { get; set; } = "";
@@ -184,6 +190,7 @@ public class QuotationEntry
 public class ProposalEntry
 {
     public int Id { get; set; }
+    public int? AdminId { get; set; }
     public string? Number { get; set; } = "";           // e.g. PRO-2001
     public string? Date { get; set; } = "";
     public string? LeadCustomer { get; set; } = "";

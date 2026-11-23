@@ -55,7 +55,8 @@ public class ProjectsApiController : ControllerBase
     {
         try
         {
-            var query = _db.WorkProjects
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var query = WorkDataScope.Projects(_db, currentUser)
                 .Include(p => p.Milestones)
                     .ThenInclude(m => m.Tasks)
                 .Include(p => p.Tasks)
@@ -103,6 +104,10 @@ public class ProjectsApiController : ControllerBase
             }
 
             var projects = await query.OrderByDescending(p => p.Id).ToListAsync();
+            foreach (var project in projects)
+            {
+                WorkDataScope.RestrictProjectContents(project, currentUser);
+            }
             return Ok(projects);
         }
         catch (Exception ex)
@@ -118,7 +123,8 @@ public class ProjectsApiController : ControllerBase
     {
         try
         {
-            var project = await _db.WorkProjects
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var project = await WorkDataScope.Projects(_db, currentUser)
                 .Include(p => p.Milestones)
                     .ThenInclude(m => m.Tasks)
                 .Include(p => p.Tasks)
@@ -128,6 +134,7 @@ public class ProjectsApiController : ControllerBase
             if (project is null)
                 return NotFound(new { message = $"Project with ID {id} not found." });
 
+            WorkDataScope.RestrictProjectContents(project, currentUser);
             return Ok(project);
         }
         catch (Exception ex)
@@ -139,12 +146,25 @@ public class ProjectsApiController : ControllerBase
 
     // POST /api/projects
     [HttpPost]
-    public async Task<ActionResult<WorkProject>> Create([FromBody] ProjectDto input)
+    public async Task<ActionResult<WorkProject>> Create([FromBody] ProjectDto input, [FromServices] CrmLeadManagement.Services.ISubscriptionLimitService limitService)
     {
         try
         {
             if (string.IsNullOrWhiteSpace(input.ProjectName))
                 return BadRequest(new { message = "ProjectName is required." });
+
+            var authEmail = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value;
+            var currentUser = await _db.Users.FirstOrDefaultAsync(u => u.Email == authEmail);
+            var effectiveAdminId = currentUser?.GetEffectiveAdminId();
+
+            if (effectiveAdminId.HasValue && effectiveAdminId.Value > 0)
+            {
+                var (allowed, reason, cur, max) = await limitService.CanAddProjectAsync(effectiveAdminId.Value);
+                if (!allowed)
+                {
+                    return StatusCode(StatusCodes.Status403Forbidden, new { message = reason, current = cur, max = max });
+                }
+            }
 
             var project = new WorkProject
             {
@@ -162,7 +182,9 @@ public class ProjectsApiController : ControllerBase
                 Priority        = string.IsNullOrWhiteSpace(input.Priority) ? "Medium" : input.Priority,
                 Status          = string.IsNullOrWhiteSpace(input.Status) ? "Active" : input.Status,
                 Notes           = input.Notes?.Trim() ?? "",
-                CreatedDate     = DateTime.UtcNow.ToString("yyyy-MM-dd")
+                CreatedDate     = DateTime.UtcNow.ToString("yyyy-MM-dd"),
+                AdminId         = effectiveAdminId,
+                AdminCode       = currentUser?.AdminCode
             };
 
             _db.WorkProjects.Add(project);

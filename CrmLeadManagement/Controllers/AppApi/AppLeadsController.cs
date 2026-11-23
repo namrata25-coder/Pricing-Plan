@@ -1,5 +1,6 @@
 using CrmLeadManagement.Models;
 using CrmLeadManagement.Models.Dtos;
+using CrmLeadManagement.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -29,7 +30,10 @@ public class AppLeadsController : ControllerBase
     [HttpGet]
     public async Task<ActionResult<IEnumerable<Lead>>> GetLeads()
     {
-        var leads = await _db.Leads.AsNoTracking().OrderByDescending(l => l.Id).ToListAsync();
+        var leads = await LeadDataScope.ScopedLeadsQuery(_db, User)
+            .AsNoTracking()
+            .OrderByDescending(l => l.Id)
+            .ToListAsync();
         return Ok(leads);
     }
 
@@ -41,7 +45,7 @@ public class AppLeadsController : ControllerBase
     [HttpGet("counts")]
     public async Task<ActionResult<LeadCountSummaryDto>> GetLeadCounts([FromQuery] string? assignedTo)
     {
-        var query = _db.Leads.AsNoTracking().AsQueryable();
+        var query = LeadDataScope.ScopedLeadsQuery(_db, User).AsNoTracking();
 
         if (!string.IsNullOrWhiteSpace(assignedTo))
         {
@@ -80,14 +84,15 @@ public class AppLeadsController : ControllerBase
     [HttpGet("{id}")]
     public async Task<ActionResult<Lead>> GetLead(string id)
     {
+        var scoped = LeadDataScope.ScopedLeadsQuery(_db, User);
         Lead? lead;
         if (int.TryParse(id, out var numId))
         {
-            lead = await _db.Leads.FirstOrDefaultAsync(l => l.Id == numId || l.LeadId == id);
+            lead = await scoped.FirstOrDefaultAsync(l => l.Id == numId || l.LeadId == id);
         }
         else
         {
-            lead = await _db.Leads.FirstOrDefaultAsync(l => l.LeadId == id);
+            lead = await scoped.FirstOrDefaultAsync(l => l.LeadId == id);
         }
 
         if (lead == null)

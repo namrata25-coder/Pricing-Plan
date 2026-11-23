@@ -68,24 +68,10 @@ public class AppMilestonesController : ControllerBase
             if (pageSize < 1) pageSize = 20;
             if (pageSize > 100) pageSize = 100;
 
-            var query = _db.WorkMilestones
+            var query = WorkDataScope.Milestones(_db, currentUser)
                 .Include(m => m.Project)
                 .Include(m => m.Tasks)
                 .AsQueryable();
-
-            if (currentUser != null)
-            {
-                var role = await _db.RoleMasters.FirstOrDefaultAsync(r => r.RoleName == currentUser.Role);
-                if (role != null && string.Equals(role.DataAccess, "OnlyAssigned", StringComparison.OrdinalIgnoreCase))
-                {
-                    var uName = currentUser.Name ?? "";
-                    var uEmail = currentUser.Email ?? "";
-                    query = query.Where(m =>
-                        (m.AssignedMembers != null && (m.AssignedMembers.Contains(uName) || m.AssignedMembers.Contains(uEmail))) ||
-                        (m.Project != null && ((m.Project.ProjectManager != null && (m.Project.ProjectManager == uName || m.Project.ProjectManager == uEmail)) ||
-                                               (m.Project.AssignedMembers != null && (m.Project.AssignedMembers.Contains(uName) || m.Project.AssignedMembers.Contains(uEmail))))));
-                }
-            }
 
             if (projectId.HasValue && projectId.Value > 0)
             {
@@ -116,14 +102,23 @@ public class AppMilestonesController : ControllerBase
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
                 .ToListAsync();
+            if (!WorkDataScope.HasFullAccess(currentUser))
+            {
+                foreach (var milestone in milestones)
+                {
+                    milestone.Tasks = milestone.Tasks
+                        .Where(task => WorkDataScope.IsSelf(task.AssignedMember, currentUser))
+                        .ToList();
+                }
+            }
 
             var projectIds = milestones.Select(m => m.ProjectId).Distinct().ToList();
-            var allProjectMilestones = await _db.WorkMilestones
+            var allProjectMilestones = await WorkDataScope.Milestones(_db, currentUser)
                 .Where(m => projectIds.Contains(m.ProjectId))
                 .OrderBy(m => m.Id)
                 .ToListAsync();
 
-            var invoices = await _db.WorkInvoices
+            var invoices = await WorkDataScope.Invoices(_db, currentUser)
                 .Include(i => i.Payments)
                 .Where(i => projectIds.Contains(i.ProjectId))
                 .ToListAsync();
@@ -152,7 +147,9 @@ public class AppMilestonesController : ControllerBase
                     CompletedAmount = m.CompletedAmount,
                     PendingAmount = m.PendingAmount,
                     ProgressPercent = m.ProgressPercent,
-                    AssignedMembers = m.AssignedMembers,
+                    AssignedMembers = WorkDataScope.HasFullAccess(currentUser)
+                        ? m.AssignedMembers
+                        : WorkDataScope.IsAssignedToSelf(m.AssignedMembers, currentUser) ? currentUser?.Name : "",
                     Priority = m.Priority,
                     Status = m.Status,
                     Notes = m.Notes,
@@ -202,6 +199,12 @@ public class AppMilestonesController : ControllerBase
                     AppApiErrorResponse.Fail("You do not have permission to view milestone dependencies."));
             }
 
+            if (!WorkDataScope.HasFullAccess(currentUser) &&
+                !await WorkDataScope.Milestones(_db, currentUser).AnyAsync(m => m.ProjectId == projectId))
+            {
+                return NotFound(AppApiErrorResponse.Fail($"Project with ID {projectId} not found."));
+            }
+
             var project = await _db.WorkProjects
                 .Include(p => p.Milestones)
                 .Include(p => p.Invoices)
@@ -213,8 +216,13 @@ public class AppMilestonesController : ControllerBase
                 return NotFound(AppApiErrorResponse.Fail($"Project with ID {projectId} not found."));
             }
 
-            var milestones = project.Milestones.OrderBy(m => m.Id).ToList();
-            var invoices = project.Invoices.ToList();
+            var visibleMilestoneIds = await WorkDataScope.Milestones(_db, currentUser)
+                .Where(m => m.ProjectId == projectId).Select(m => m.Id).ToListAsync();
+            var visibleInvoiceIds = await WorkDataScope.Invoices(_db, currentUser)
+                .Where(i => i.ProjectId == projectId).Select(i => i.Id).ToListAsync();
+            var milestones = project.Milestones.Where(m => visibleMilestoneIds.Contains(m.Id))
+                .OrderBy(m => m.Id).ToList();
+            var invoices = project.Invoices.Where(i => visibleInvoiceIds.Contains(i.Id)).ToList();
 
             var evaluatedMilestones = milestones.Select(m =>
             {
@@ -231,7 +239,9 @@ public class AppMilestonesController : ControllerBase
                     progressPercent = m.ProgressPercent,
                     startDate = m.StartDate,
                     dueDate = m.DueDate,
-                    assignedMembers = m.AssignedMembers,
+                    assignedMembers = WorkDataScope.HasFullAccess(currentUser)
+                        ? m.AssignedMembers
+                        : WorkDataScope.IsAssignedToSelf(m.AssignedMembers, currentUser) ? currentUser?.Name : "",
                     sequenceIndex = dep.SequenceIndex,
                     isLocked = dep.IsLocked,
                     lockReason = dep.LockReason,
@@ -303,7 +313,7 @@ public class AppMilestonesController : ControllerBase
                     AppApiErrorResponse.Fail("You do not have permission to view milestones."));
             }
 
-            var milestone = await _db.WorkMilestones
+            var milestone = await WorkDataScope.Milestones(_db, currentUser)
                 .Include(m => m.Project)
                 .Include(m => m.Tasks)
                 .FirstOrDefaultAsync(m => m.Id == id);
@@ -312,13 +322,19 @@ public class AppMilestonesController : ControllerBase
             {
                 return NotFound(AppApiErrorResponse.Fail($"Milestone with ID {id} not found."));
             }
+            if (!WorkDataScope.HasFullAccess(currentUser))
+            {
+                milestone.Tasks = milestone.Tasks
+                    .Where(task => WorkDataScope.IsSelf(task.AssignedMember, currentUser))
+                    .ToList();
+            }
 
-            var projectMilestones = await _db.WorkMilestones
+            var projectMilestones = await WorkDataScope.Milestones(_db, currentUser)
                 .Where(m => m.ProjectId == milestone.ProjectId)
                 .OrderBy(m => m.Id)
                 .ToListAsync();
 
-            var projectInvoices = await _db.WorkInvoices
+            var projectInvoices = await WorkDataScope.Invoices(_db, currentUser)
                 .Include(i => i.Payments)
                 .Where(i => i.ProjectId == milestone.ProjectId)
                 .ToListAsync();
@@ -341,7 +357,9 @@ public class AppMilestonesController : ControllerBase
                 completedAmount = milestone.CompletedAmount,
                 pendingAmount = milestone.PendingAmount,
                 progressPercent = milestone.ProgressPercent,
-                assignedMembers = milestone.AssignedMembers,
+                assignedMembers = WorkDataScope.HasFullAccess(currentUser)
+                    ? milestone.AssignedMembers
+                    : WorkDataScope.IsAssignedToSelf(milestone.AssignedMembers, currentUser) ? currentUser?.Name : "",
                 priority = milestone.Priority,
                 status = milestone.Status,
                 notes = milestone.Notes,

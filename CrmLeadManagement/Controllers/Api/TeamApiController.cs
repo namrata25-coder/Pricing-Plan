@@ -158,7 +158,7 @@ public class TeamApiController : ControllerBase
     /// Creates or updates a team member.
     /// </summary>
     [HttpPost("members/save")]
-    public async Task<IActionResult> SaveMemberApi([FromBody] SaveMemberApiDto dto)
+    public async Task<IActionResult> SaveMemberApi([FromBody] SaveMemberApiDto dto, [FromServices] CrmLeadManagement.Services.ISubscriptionLimitService limitService)
     {
         if (dto == null) return BadRequest(new { message = "Invalid data." });
 
@@ -202,6 +202,16 @@ public class TeamApiController : ControllerBase
 
         if (dto.Id == 0)
         {
+            var effectiveAdminId = currentUser?.GetEffectiveAdminId();
+            if (effectiveAdminId.HasValue && effectiveAdminId.Value > 0)
+            {
+                var (allowed, reason, cur, max) = await limitService.CanAddUserAsync(effectiveAdminId.Value);
+                if (!allowed)
+                {
+                    return StatusCode(StatusCodes.Status403Forbidden, new { message = reason, current = cur, max = max });
+                }
+            }
+
             if (string.IsNullOrWhiteSpace(dto.Password) || dto.Password.Trim().Length < 6)
                 return BadRequest(new { message = "Password must be at least 6 characters for a new team member." });
 
@@ -214,7 +224,10 @@ public class TeamApiController : ControllerBase
                 ModulePermissions = modulePermsString,
                 CreatedAt = DateTime.UtcNow,
                 FailedLoginCount = 0,
-                MustChangePassword = false
+                MustChangePassword = false,
+                AdminId = effectiveAdminId,
+                AdminCode = currentUser?.AdminCode,
+                CompanyName = currentUser?.CompanyName
             };
             newUser.PasswordHash = hasher.HashPassword(newUser, dto.Password.Trim());
 

@@ -5,6 +5,7 @@
     var search = ViewBag.Search as string ?? "";
     var selectedRole = ViewBag.Role as string ?? "";
     var selectedStatus = ViewBag.Status as string ?? "";
+    var employeeBasicSalaries = ViewBag.EmployeeBasicSalaries as Dictionary<int, decimal> ?? new Dictionary<int, decimal>();
 }
 
 <div class="breadcrumb-row">
@@ -23,6 +24,13 @@
         </p>
     </div>
     <div style="display:flex;gap:10px;align-items:center;">
+        @if (ViewBag.MaxUsers != null)
+        {
+            <div style="background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8;padding:6px 12px;border-radius:8px;font-size:12.5px;font-weight:700;display:inline-flex;align-items:center;gap:6px;">
+                <i class="bi bi-people-fill"></i>
+                <span>Users: <strong style="color:@(ViewBag.UserLimitReached == true ? "#dc2626" : "#1d4ed8");">@ViewBag.CurrentUsers / @ViewBag.MaxUsers</strong></span>
+            </div>
+        }
         <a asp-controller="Team" asp-action="Roles" class="btn btn-secondary">
             <i class="bi bi-shield-lock-fill" style="color:var(--brand-600);"></i> Roles &amp; Permissions
         </a>
@@ -31,6 +39,22 @@
         </button>
     </div>
 </div>
+
+@if (ViewBag.UserLimitReached == true)
+{
+    <div style="background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:12px 18px;border-radius:10px;margin-bottom:18px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+        <div style="display:flex;align-items:center;gap:10px;">
+            <i class="bi bi-exclamation-triangle-fill" style="font-size:20px;color:#d97706;"></i>
+            <div>
+                <strong>User Capacity Limit Reached (@ViewBag.CurrentUsers / @ViewBag.MaxUsers Users)</strong>
+                <div style="font-size:12.5px;color:#78350f;">You have reached the maximum number of team members permitted by your current subscription plan. Upgrade your plan to invite more team members.</div>
+            </div>
+        </div>
+        <a asp-controller="Subscription" asp-action="Index" class="btn btn-sm" style="background:#d97706;color:#ffffff;font-weight:700;padding:6px 14px;border-radius:6px;text-decoration:none;">
+            <i class="bi bi-arrow-up-circle-fill"></i> Upgrade Plan
+        </a>
+    </div>
+}
 
 <!-- Alert Notifications -->
 @if (TempData["SuccessMessage"] != null)
@@ -165,6 +189,11 @@
                                         data-email="@u.Email"
                                         data-role="@u.Role"
                                         data-status="@u.Status"
+                                        data-employment-type="@u.EmploymentType"
+                                        data-sales-target-value="@(u.SalesTargetValue?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "")"
+                                        data-basic-salary="@(employeeBasicSalaries.TryGetValue(u.Id, out var basicSalary) ? basicSalary.ToString(System.Globalization.CultureInfo.InvariantCulture) : "")"
+                                        data-below-target-commission-percent="@(u.BelowTargetCommissionPercent?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "")"
+                                        data-at-or-above-target-commission-percent="@(u.AtOrAboveTargetCommissionPercent?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "")"
                                         onclick="handleEditMemberClick(this)">
                                     <i class="bi bi-pencil"></i>
                                 </button>
@@ -546,7 +575,7 @@
                         </label>
                         <div class="team-input-wrapper">
                             <i class="bi bi-shield-check team-input-icon"></i>
-                            <select id="memberRole" name="role" class="team-form-select" onchange="clearErrorFor(this)">
+                            <select id="memberRole" name="role" class="team-form-select" onchange="clearErrorFor(this); handleMemberRoleChange();">
                                 @if (allRoles != null && allRoles.Any())
                                 {
                                     @foreach (var r in allRoles)
@@ -577,6 +606,58 @@
                                 <option value="Active">Active</option>
                                 <option value="Inactive">Inactive</option>
                             </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="salesEmploymentFields" style="display:none;margin-top:14px;padding:14px;background:#f8fafc;border:1px solid var(--line);border-radius:10px;">
+                    <div class="team-form-grid">
+                        <div class="team-form-group">
+                            <label class="team-form-label" for="memberEmploymentType">Employee Type <span class="req-star">*</span></label>
+                            <div class="team-input-wrapper">
+                                <i class="bi bi-person-workspace team-input-icon"></i>
+                                <select id="memberEmploymentType" name="employmentType" class="team-form-select" onchange="clearErrorFor(this); handleEmploymentTypeChange();">
+                                    <option value="">Select type</option>
+                                    <option value="Permanent">Permanent</option>
+                                    <option value="Freelancer">Freelancer</option>
+                                </select>
+                            </div>
+                            <span class="team-field-error" id="err-memberEmploymentType"></span>
+                        </div>
+                    </div>
+
+                    <div id="freelancerCompensationFields" class="team-form-grid" style="display:none;margin-top:14px;">
+                        <div class="team-form-group">
+                            <label class="team-form-label" for="memberSalesTarget">Maximum Target</label>
+                            <div class="team-input-wrapper">
+                                <i class="bi bi-bullseye team-input-icon"></i>
+                                <input type="number" id="memberSalesTarget" name="salesTargetValue" class="team-form-input" min="0" step="0.01" placeholder="Enter target value" />
+                            </div>
+                        </div>
+                        <div class="team-form-group">
+                            <label class="team-form-label" for="memberMinimumTarget">Minimum Target</label>
+                            <div class="team-input-wrapper">
+                                <i class="bi bi-graph-down-arrow team-input-icon"></i>
+                                <input type="number" id="memberMinimumTarget" class="team-form-input" min="0" step="0.01" placeholder="Set by Payroll salary" readonly />
+                            </div>
+                            <span style="font-size:11.5px;color:var(--ink-500);">Automatically set to the current Basic Salary in Payroll.</span>
+                        </div>
+                        <div class="team-form-group">
+                            <label class="team-form-label" for="memberBelowTargetCommission">Percentage on Below Target Value (%)</label>
+                            <div class="team-input-wrapper">
+                                <i class="bi bi-percent team-input-icon"></i>
+                                <input type="number" id="memberBelowTargetCommission" name="belowTargetCommissionPercent" class="team-form-input" min="0" max="100" step="0.01" placeholder="Example: 8" />
+                            </div>
+                        </div>
+                        <div class="team-form-group">
+                            <label class="team-form-label" for="memberAtTargetCommission">Percentage on Above Target Value (%)</label>
+                            <div class="team-input-wrapper">
+                                <i class="bi bi-percent team-input-icon"></i>
+                                <input type="number" id="memberAtTargetCommission" name="atOrAboveTargetCommissionPercent" class="team-form-input" min="0" max="100" step="0.01" placeholder="Example: 10" />
+                            </div>
+                        </div>
+                        <div style="grid-column:1/-1;font-size:12px;color:var(--ink-500);">
+                            All values are optional. Enter commission as a percentage for sales below and above the target.
                         </div>
                     </div>
                 </div>
@@ -670,6 +751,34 @@
 }
 
 <script>
+function handleMemberRoleChange() {
+    const isSalesExecutive = (document.getElementById("memberRole").value || "").trim().toLowerCase() === "sales executive";
+    const employmentFields = document.getElementById("salesEmploymentFields");
+    const employmentType = document.getElementById("memberEmploymentType");
+    employmentFields.style.display = isSalesExecutive ? "block" : "none";
+    employmentType.required = isSalesExecutive;
+    employmentType.disabled = !isSalesExecutive;
+    if (!isSalesExecutive) {
+        employmentType.value = "";
+    }
+    handleEmploymentTypeChange();
+}
+
+function handleEmploymentTypeChange() {
+    const isFreelancer = document.getElementById("memberEmploymentType").value === "Freelancer";
+    const compensationFields = document.getElementById("freelancerCompensationFields");
+    compensationFields.style.display = isFreelancer ? "grid" : "none";
+    const minimumTarget = document.getElementById("memberMinimumTarget");
+    if (isFreelancer) {
+        minimumTarget.value = minimumTarget.dataset.basicSalary || "";
+    }
+    ["memberSalesTarget", "memberMinimumTarget", "memberBelowTargetCommission", "memberAtTargetCommission"].forEach(id => {
+        const field = document.getElementById(id);
+        field.disabled = !isFreelancer;
+        if (!isFreelancer) field.value = "";
+    });
+}
+
 function openAddMemberModal() {
     clearFormErrors();
     const form = document.getElementById("teamMemberForm");
@@ -679,6 +788,13 @@ function openAddMemberModal() {
     document.getElementById("memberName").value = "";
     document.getElementById("memberEmail").value = "";
     document.getElementById("memberStatus").value = "Active";
+    document.getElementById("memberEmploymentType").value = "";
+    document.getElementById("memberSalesTarget").value = "";
+    document.getElementById("memberMinimumTarget").value = "";
+    document.getElementById("memberMinimumTarget").dataset.basicSalary = "";
+    document.getElementById("memberBelowTargetCommission").value = "";
+    document.getElementById("memberAtTargetCommission").value = "";
+    handleMemberRoleChange();
     document.getElementById("memberPassword").value = "";
     document.getElementById("memberPassword").type = "password";
     document.getElementById("memberPassword").placeholder = "Enter login password (min 6 characters)";
@@ -715,16 +831,29 @@ function handleEditMemberClick(btn) {
     const email = btn.getAttribute("data-email");
     const role = btn.getAttribute("data-role");
     const status = btn.getAttribute("data-status");
-    openEditMemberModal(id, name, email, role, status);
+    const employmentType = btn.getAttribute("data-employment-type");
+    const salesTargetValue = btn.getAttribute("data-sales-target-value");
+    const basicSalary = btn.getAttribute("data-basic-salary");
+    const belowTargetCommissionPercent = btn.getAttribute("data-below-target-commission-percent");
+    const atOrAboveTargetCommissionPercent = btn.getAttribute("data-at-or-above-target-commission-percent");
+    openEditMemberModal(id, name, email, role, status, employmentType, salesTargetValue, basicSalary, belowTargetCommissionPercent, atOrAboveTargetCommissionPercent);
 }
 
-function openEditMemberModal(id, name, email, role, status) {
+function openEditMemberModal(id, name, email, role, status, employmentType, salesTargetValue, basicSalary, belowTargetCommissionPercent, atOrAboveTargetCommissionPercent) {
     clearFormErrors();
     document.getElementById("memberId").value = id;
     document.getElementById("memberName").value = name || "";
     document.getElementById("memberEmail").value = email || "";
     document.getElementById("memberRole").value = role || "";
     document.getElementById("memberStatus").value = status || "Active";
+    document.getElementById("memberEmploymentType").value = employmentType || "";
+    document.getElementById("memberSalesTarget").value = salesTargetValue || "";
+    document.getElementById("memberMinimumTarget").dataset.basicSalary = basicSalary || "";
+    document.getElementById("memberMinimumTarget").value = basicSalary || "";
+    document.getElementById("memberBelowTargetCommission").value = belowTargetCommissionPercent || "";
+    document.getElementById("memberAtTargetCommission").value = atOrAboveTargetCommissionPercent || "";
+    handleMemberRoleChange();
+    handleEmploymentTypeChange();
     document.getElementById("memberPassword").value = "";
     document.getElementById("memberPassword").type = "password";
     document.getElementById("memberPassword").placeholder = "Leave blank to keep current password";

@@ -72,7 +72,8 @@ public class PaymentsApiController : ControllerBase
     {
         try
         {
-            var query = _db.WorkPayments
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var query = WorkDataScope.Payments(_db, currentUser)
                 .Include(p => p.Invoice)
                     .ThenInclude(i => i!.Project)
                 .Include(p => p.Invoice)
@@ -118,7 +119,8 @@ public class PaymentsApiController : ControllerBase
     {
         try
         {
-            var payment = await _db.WorkPayments
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var payment = await WorkDataScope.Payments(_db, currentUser)
                 .Include(p => p.Invoice)
                     .ThenInclude(i => i!.Project)
                 .Include(p => p.Invoice)
@@ -143,7 +145,8 @@ public class PaymentsApiController : ControllerBase
     {
         try
         {
-            var payments = await _db.WorkPayments
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var payments = await WorkDataScope.Payments(_db, currentUser)
                 .Include(p => p.Invoice)
                     .ThenInclude(i => i!.Project)
                 .Include(p => p.Invoice)
@@ -202,6 +205,7 @@ public class PaymentsApiController : ControllerBase
             var payment = new WorkPayment
             {
                 InvoiceId            = invoice.Id,
+                AdminId              = invoice.AdminId ?? PermissionChecker.GetCurrentUser(_db, User)?.GetEffectiveAdminId(),
                 PaymentNumber        = paymentNumber,
                 Amount               = Math.Max(0, input.Amount),
                 PaymentDate          = paymentDate,
@@ -336,7 +340,8 @@ public class PaymentsApiController : ControllerBase
     {
         try
         {
-            var query = _db.WorkPayments
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var query = WorkDataScope.Payments(_db, currentUser)
                 .Include(p => p.Invoice)
                     .ThenInclude(i => i!.Project)
                 .Include(p => p.Invoice)

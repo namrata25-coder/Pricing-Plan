@@ -192,6 +192,9 @@ public static class RoleStore
             new ModulePermissionItem { Section = "FINANCE", Module = "Expenses", HasView = true, HasCreate = true, HasEdit = true, HasDelete = true, ExtraName = "Approve" },
             new ModulePermissionItem { Section = "FINANCE", Module = "Payment", HasView = true, HasCreate = true, HasEdit = true, HasDelete = true, ExtraName = null },
 
+            // PORTFOLIO MANAGEMENT
+            new ModulePermissionItem { Section = "PORTFOLIO MANAGEMENT", Module = "Product", HasView = true, HasCreate = true, HasEdit = true, HasDelete = true, ExtraName = null },
+
             // PROJECTS
             new ModulePermissionItem { Section = "PROJECTS", Module = "Project", HasView = true, HasCreate = true, HasEdit = true, HasDelete = true, ExtraName = null },
             new ModulePermissionItem { Section = "PROJECTS", Module = "Milestone", HasView = true, HasCreate = true, HasEdit = true, HasDelete = true, ExtraName = "Approve" },
@@ -246,6 +249,9 @@ public static class RoleStore
                     item.View = true; item.Create = true; item.Edit = true; item.Delete = false;
                     break;
                 case "Proposal":
+                    item.View = true; item.Create = true; item.Edit = true; item.Delete = false;
+                    break;
+                case "Product":
                     item.View = true; item.Create = true; item.Edit = true; item.Delete = false;
                     break;
                 case "Invoice":

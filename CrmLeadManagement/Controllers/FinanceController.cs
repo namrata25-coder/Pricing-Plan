@@ -66,7 +66,8 @@ public class FinanceController : Controller
         ViewData["ActivePage"] = "FinanceInvoice";
         ViewData["InvoiceId"] = id;
 
-        var invoice = await _db.WorkInvoices
+        var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+        var invoice = await WorkDataScope.Invoices(_db, currentUser)
             .Include(i => i.Project)
             .Include(i => i.Milestone)
             .Include(i => i.Payments)
@@ -74,6 +75,7 @@ public class FinanceController : Controller
 
         if (invoice == null)
         {
+            TempData["ErrorMessage"] = "Invoice not found or you do not have access to view it.";
             return RedirectToAction(nameof(InvoiceList));
         }
 
@@ -128,7 +130,7 @@ public class FinanceController : Controller
         ViewData["Title"] = "Estimation List";
         ViewData["ActivePage"] = "FinanceEstimation";
 
-        var rows = LeadStore.Leads
+        var rows = LeadDataScope.VisibleLeads(_db, User)
             .SelectMany(lead => lead.Estimations.Select(e => new FinanceListRow
             {
                 LeadId = lead.LeadId,
@@ -156,10 +158,11 @@ public class FinanceController : Controller
             return RedirectToAction(nameof(EstimationList));
         }
 
-        var lead = LeadStore.GetById(leadId);
+        var lead = LeadDataScope.GetVisibleLead(_db, User, leadId);
         var entry = lead?.Estimations.FirstOrDefault(e => e.Number == number);
         if (lead is null || entry is null)
         {
+            TempData["ErrorMessage"] = "Estimation not found or you do not have access to view it.";
             return RedirectToAction("EstimationList");
         }
 
@@ -179,7 +182,7 @@ public class FinanceController : Controller
             return RedirectToAction(nameof(EstimationList));
         }
 
-        var lead = LeadStore.GetById(leadId);
+        var lead = LeadDataScope.GetVisibleLead(_db, User, leadId);
         var existing = lead?.Estimations.FirstOrDefault(e => e.Number == number);
         if (existing is not null)
         {
@@ -204,7 +207,7 @@ public class FinanceController : Controller
         ViewData["Title"] = "Quotation List";
         ViewData["ActivePage"] = "FinanceQuotation";
 
-        var rows = LeadStore.Leads
+        var rows = LeadDataScope.VisibleLeads(_db, User)
             .SelectMany(lead => lead.Quotations.Select(q => new FinanceListRow
             {
                 LeadId = lead.LeadId,
@@ -232,10 +235,11 @@ public class FinanceController : Controller
             return RedirectToAction(nameof(QuotationList));
         }
 
-        var lead = LeadStore.GetById(leadId);
+        var lead = LeadDataScope.GetVisibleLead(_db, User, leadId);
         var entry = lead?.Quotations.FirstOrDefault(q => q.Number == number);
         if (lead is null || entry is null)
         {
+            TempData["ErrorMessage"] = "Quotation not found or you do not have access to view it.";
             return RedirectToAction("QuotationList");
         }
 
@@ -255,7 +259,7 @@ public class FinanceController : Controller
             return RedirectToAction(nameof(QuotationList));
         }
 
-        var lead = LeadStore.GetById(leadId);
+        var lead = LeadDataScope.GetVisibleLead(_db, User, leadId);
         var existing = lead?.Quotations.FirstOrDefault(q => q.Number == number);
         if (existing is not null)
         {
@@ -280,7 +284,7 @@ public class FinanceController : Controller
         ViewData["Title"] = "Proposal List";
         ViewData["ActivePage"] = "FinanceProposal";
 
-        var rows = LeadStore.Leads
+        var rows = LeadDataScope.VisibleLeads(_db, User)
             .SelectMany(lead => lead.Proposals.Select(p => new FinanceListRow
             {
                 LeadId = lead.LeadId,
@@ -308,10 +312,11 @@ public class FinanceController : Controller
             return RedirectToAction(nameof(ProposalList));
         }
 
-        var lead = LeadStore.GetById(leadId);
+        var lead = LeadDataScope.GetVisibleLead(_db, User, leadId);
         var entry = lead?.Proposals.FirstOrDefault(p => p.Number == number);
         if (lead is null || entry is null)
         {
+            TempData["ErrorMessage"] = "Proposal not found or you do not have access to view it.";
             return RedirectToAction("ProposalList");
         }
 
@@ -331,7 +336,7 @@ public class FinanceController : Controller
             return RedirectToAction(nameof(ProposalList));
         }
 
-        var lead = LeadStore.GetById(leadId);
+        var lead = LeadDataScope.GetVisibleLead(_db, User, leadId);
         var existing = lead?.Proposals.FirstOrDefault(p => p.Number == number);
         if (existing is not null)
         {

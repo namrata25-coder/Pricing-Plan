@@ -25,6 +25,10 @@ public class WorkProject
     public string? Notes         { get; set; } = "";
     public string? CreatedDate   { get; set; } = "";
 
+    // SaaS Multi-tenancy
+    public int? AdminId { get; set; }
+    public string? AdminCode { get; set; }
+
     // Navigation
     public List<WorkMilestone> Milestones { get; set; } = new();
     public List<WorkTask>      Tasks      { get; set; } = new();
@@ -57,6 +61,7 @@ public class WorkProject
 public class WorkMilestone
 {
     public int Id { get; set; }
+    public int? AdminId { get; set; }
 
     public int ProjectId { get; set; }
     [JsonIgnore]
@@ -99,6 +104,7 @@ public class WorkMilestone
 public class WorkTask
 {
     public int Id { get; set; }
+    public int? AdminId { get; set; }
 
     public int ProjectId { get; set; }
     [JsonIgnore]
@@ -133,6 +139,7 @@ public class WorkTask
 public class WorkInvoice
 {
     public int Id { get; set; }
+    public int? AdminId { get; set; }
 
     public int ProjectId { get; set; }
     [JsonIgnore]
@@ -190,6 +197,7 @@ public class WorkInvoice
 public class WorkPayment
 {
     public int Id { get; set; }
+    public int? AdminId { get; set; }
 
     public int InvoiceId { get; set; }
     [JsonIgnore]
@@ -210,6 +218,7 @@ public class WorkPayment
 public class WorkRecurringInvoice
 {
     public int Id { get; set; }
+    public int? AdminId { get; set; }
 
     public int ProjectId { get; set; }
     [JsonIgnore]
@@ -247,6 +256,7 @@ public class WorkRecurringInvoice
 public class WorkFile
 {
     public int Id { get; set; }
+    public int? AdminId { get; set; }
 
     public int ProjectId { get; set; }
     [JsonIgnore]
@@ -279,6 +289,7 @@ public class WorkFile
 public class WorkTimesheet
 {
     public int Id { get; set; }
+    public int? AdminId { get; set; }
 
     public int ProjectId { get; set; }
     [JsonIgnore]
@@ -307,6 +318,7 @@ public class WorkTimesheet
 public class WorkExpense
 {
     public int Id { get; set; }
+    public int? AdminId { get; set; }
 
     public int ProjectId { get; set; }
     [JsonIgnore]
@@ -334,6 +346,7 @@ public class WorkExpense
 public class WorkNote
 {
     public int Id { get; set; }
+    public int? AdminId { get; set; }
 
     public int ProjectId { get; set; }
     [JsonIgnore]

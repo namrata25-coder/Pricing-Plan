@@ -1,8 +1,10 @@
 using System.Security.Claims;
 using CrmLeadManagement.Models;
 using CrmLeadManagement.Security;
+using CrmLeadManagement.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace CrmLeadManagement.Controllers;
 
@@ -10,18 +12,50 @@ namespace CrmLeadManagement.Controllers;
 public class LeadController : Controller
 {
     private readonly AppDbContext _db;
+    private readonly ISaaSPaymentService _paymentService;
+    private readonly ISubscriptionLimitService _limitService;
 
-    public LeadController(AppDbContext db)
+    public LeadController(AppDbContext db, ISaaSPaymentService paymentService, ISubscriptionLimitService limitService)
     {
         _db = db;
+        _paymentService = paymentService;
+        _limitService = limitService;
+    }
+
+    private void PopulateTenantQuotaInfo(UserRoleEntry? currentUser, int? overrideAdminId = null)
+    {
+        var effectiveAdminId = overrideAdminId ?? currentUser?.GetEffectiveAdminId();
+        if (effectiveAdminId.HasValue && effectiveAdminId.Value > 0)
+        {
+            var sub = _db.CompanySubscriptions.FirstOrDefault(s => s.AdminId == effectiveAdminId.Value);
+            var currentCount = _db.Leads.Count(l => l.AdminId == effectiveAdminId.Value);
+            int maxLeads = sub?.MaxLeads > 0 ? sub.MaxLeads : 10;
+            bool isExpired = sub != null && (DateTime.UtcNow > sub.EndDate || string.Equals(sub.Status, "Expired", StringComparison.OrdinalIgnoreCase));
+
+            ViewBag.TenantSub = sub;
+            ViewBag.CurrentLeadsCount = currentCount;
+            ViewBag.MaxLeads = maxLeads;
+            ViewBag.IsLimitReached = isExpired || (currentCount >= maxLeads);
+            ViewBag.EffectiveAdminId = effectiveAdminId.Value;
+            ViewBag.PlanName = sub?.PlanName ?? "Free Trial";
+            ViewBag.AvailablePlans = _db.SubscriptionPlans.Where(p => p.IsActive).OrderBy(p => p.DisplayOrder).ToList();
+        }
+        else
+        {
+            ViewBag.IsLimitReached = false;
+            ViewBag.MaxLeads = 10;
+            ViewBag.CurrentLeadsCount = 0;
+            ViewBag.AvailablePlans = _db.SubscriptionPlans.Where(p => p.IsActive).OrderBy(p => p.DisplayOrder).ToList();
+        }
     }
 
     // GET /Lead/List
-    public IActionResult List()
+    public IActionResult List(int? adminId = null)
     {
         var authEmail = User.FindFirst(ClaimTypes.Email)?.Value;
         var currentUser = _db.Users.FirstOrDefault(u => u.Email == authEmail);
-        bool isAdmin = User.IsInRole("Admin") || (currentUser != null && string.Equals(currentUser.Role, "Admin", StringComparison.OrdinalIgnoreCase));
+        bool isSuperAdmin = PermissionChecker.IsSuperAdmin(User, currentUser);
+        bool isAdmin = User.IsInRole("Admin") || (currentUser != null && string.Equals(currentUser.Role, "Admin", StringComparison.OrdinalIgnoreCase)) || isSuperAdmin;
 
         if (!isAdmin && !PermissionChecker.HasModulePermission(_db, currentUser, "Lead List", "View"))
         {
@@ -33,20 +67,14 @@ public class LeadController : Controller
             return RedirectToAction("Projects", "Work");
         }
 
+        var effectiveAdminFilter = isSuperAdmin ? adminId : null;
+        PopulateTenantQuotaInfo(currentUser, effectiveAdminFilter);
+
         ViewData["Title"] = "Lead List";
         ViewData["ActivePage"] = "LeadList";
+        ViewBag.SelectedAdminId = effectiveAdminFilter;
 
-        var roleMaster = currentUser != null ? _db.RoleMasters.FirstOrDefault(r => r.RoleName == currentUser.Role) : null;
-        if (!isAdmin && roleMaster?.DataAccess == "OnlyAssigned" && currentUser != null)
-        {
-            var userLeads = LeadStore.Leads
-                .Where(l => string.Equals(l.AssignedTo, currentUser.Name, StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(l.AssignedTo, currentUser.Email, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            return View(userLeads);
-        }
-
-        return View(LeadStore.Leads);
+        return View(LeadDataScope.VisibleLeads(_db, User, effectiveAdminFilter).ToList());
     }
 
     // GET /Lead/Assigned
@@ -66,20 +94,15 @@ public class LeadController : Controller
             return RedirectToAction("Projects", "Work");
         }
 
+        PopulateTenantQuotaInfo(currentUser);
+
         ViewData["Title"] = "Assigned Leads";
         ViewData["ActivePage"] = "AssignedList";
 
-        var roleMaster = currentUser != null ? _db.RoleMasters.FirstOrDefault(r => r.RoleName == currentUser.Role) : null;
-        if (!isAdmin && (roleMaster == null || roleMaster.DataAccess == "OnlyAssigned") && currentUser != null)
-        {
-            var userLeads = LeadStore.Leads
-                .Where(l => string.Equals(l.AssignedTo, currentUser.Name, StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(l.AssignedTo, currentUser.Email, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            return View(userLeads);
-        }
-
-        return View(LeadStore.Leads.Where(l => !string.IsNullOrWhiteSpace(l.AssignedTo)).ToList());
+        var scoped = LeadDataScope.VisibleLeads(_db, User)
+            .Where(l => !string.IsNullOrWhiteSpace(l.AssignedTo))
+            .ToList();
+        return View(scoped);
     }
 
     // GET /Lead/Details?id=LD-1001&tab=call
@@ -97,10 +120,11 @@ public class LeadController : Controller
             return RedirectToAction(nameof(Assigned));
         }
 
-        var lead = LeadStore.GetById(id);
+        var lead = LeadDataScope.GetVisibleLead(_db, User, id);
         if (lead is null)
         {
-            return RedirectToAction("List");
+            TempData["ErrorMessage"] = "Lead not found or you do not have access to view it.";
+            return RedirectToAction(isAdmin ? nameof(List) : nameof(Assigned));
         }
 
         ViewData["Title"] = "Lead Details";
@@ -132,11 +156,79 @@ public class LeadController : Controller
 
         if (string.IsNullOrWhiteSpace(Input.LeadId))
         {
-            LeadStore.AddLead(Input.ToLead());
+            var effectiveAdminId = currentUser?.GetEffectiveAdminId();
+            if (effectiveAdminId.HasValue && effectiveAdminId.Value > 0)
+            {
+                var (allowed, reason, cur, max) = _limitService.CanAddLeadAsync(effectiveAdminId.Value).GetAwaiter().GetResult();
+                if (!allowed)
+                {
+                    TempData["ErrorMessage"] = reason;
+                    return RedirectToReturnUrl(returnUrl, "List");
+                }
+            }
+
+            var lead = Input.ToLead();
+            lead.AdminId = effectiveAdminId;
+            lead.AdminCode = currentUser?.AdminCode;
+            LeadStore.AddLead(lead);
+            TempData["SuccessMessage"] = "Lead created successfully.";
         }
         else
         {
+            var existing = LeadDataScope.GetVisibleLead(_db, User, Input.LeadId);
+            if (existing is null)
+            {
+                TempData["ErrorMessage"] = "Lead not found or access denied.";
+                return RedirectToReturnUrl(returnUrl, "List");
+            }
             LeadStore.UpdateLead(Input.ToLead());
+            TempData["SuccessMessage"] = "Lead updated successfully.";
+        }
+
+        return RedirectToReturnUrl(returnUrl, "List");
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> UpgradePlan(int planId, string? returnUrl)
+    {
+        var authEmail = User.FindFirst(ClaimTypes.Email)?.Value;
+        var currentUser = _db.Users.FirstOrDefault(u => u.Email == authEmail);
+        var effectiveAdminId = currentUser?.GetEffectiveAdminId();
+        if (!effectiveAdminId.HasValue || effectiveAdminId.Value <= 0)
+        {
+            TempData["ErrorMessage"] = "Unable to identify company account.";
+            return RedirectToReturnUrl(returnUrl, "List");
+        }
+
+        var plan = await _db.SubscriptionPlans.FirstOrDefaultAsync(p => p.Id == planId && p.IsActive);
+        if (plan == null)
+        {
+            TempData["ErrorMessage"] = "Invalid subscription plan selected.";
+            return RedirectToReturnUrl(returnUrl, "List");
+        }
+
+        // If it's a paid plan, redirect to the Subscribe checkout page to pay via Razorpay or Bank Transfer
+        if (plan.Price > 0)
+        {
+            return RedirectToAction("Subscribe", "Subscription", new { id = plan.Id });
+        }
+
+        var orderResult = await _paymentService.CreateSubscriptionOrderAsync(effectiveAdminId.Value, plan.Id);
+        var (success, msg) = await _paymentService.VerifyAndActivateSubscriptionAsync(
+            orderResult.OrderId,
+            "",
+            "",
+            effectiveAdminId.Value,
+            plan.Id);
+
+        if (success)
+        {
+            TempData["SuccessMessage"] = $"Plan upgraded successfully to {plan.Name}! Up to {plan.MaxTeamMembers} Users.";
+        }
+        else
+        {
+            TempData["ErrorMessage"] = $"Plan upgrade failed: {msg}";
         }
 
         return RedirectToReturnUrl(returnUrl, "List");
@@ -164,7 +256,7 @@ public class LeadController : Controller
     [HttpPost]
     public IActionResult AddCall(string leadId, string callDate, string callTime, string? callType, string callStatus, string? duration, string? remarks, string? remark)
     {
-        var lead = LeadStore.GetById(leadId);
+        var lead = LeadDataScope.GetVisibleLead(_db, User, leadId);
         if (lead is null) return RedirectToAction("List");
 
         var remarkText = !string.IsNullOrWhiteSpace(remark) ? remark : (remarks ?? "");
@@ -191,7 +283,7 @@ public class LeadController : Controller
     [HttpPost]
     public IActionResult AddFollowUp(string leadId, string followUpDate, string followUpTime, string status, string? remarks, string? followUpType = "Call")
     {
-        var lead = LeadStore.GetById(leadId);
+        var lead = LeadDataScope.GetVisibleLead(_db, User, leadId);
         if (lead is null) return RedirectToAction("List");
 
         if (!string.IsNullOrWhiteSpace(followUpDate) && !string.IsNullOrWhiteSpace(followUpTime) && !string.IsNullOrWhiteSpace(status))
@@ -218,7 +310,7 @@ public class LeadController : Controller
     [HttpPost]
     public IActionResult AddVisit(string leadId, string visitDate, string visitTime, string visitLocation, string? employee, string? outcome, string? conversation, string? remarks)
     {
-        var lead = LeadStore.GetById(leadId);
+        var lead = LeadDataScope.GetVisibleLead(_db, User, leadId);
         if (lead is null) return RedirectToAction("List");
 
         if (!string.IsNullOrWhiteSpace(visitDate) && !string.IsNullOrWhiteSpace(visitTime) && !string.IsNullOrWhiteSpace(visitLocation))
@@ -249,7 +341,7 @@ public class LeadController : Controller
         List<string>? w1, List<string>? w2, List<string>? w3,
         List<string>? types, List<string>? glass, List<string>? topology)
     {
-        var lead = LeadStore.GetById(leadId);
+        var lead = LeadDataScope.GetVisibleLead(_db, User, leadId);
         if (lead is null) return RedirectToAction("List");
 
         var counts = new[] {
@@ -444,7 +536,7 @@ public class LeadController : Controller
     [HttpPost]
     public IActionResult AssignLead(string leadId, string assignedEmployee, string assignmentDate, string? remarks)
     {
-        var lead = LeadStore.GetById(leadId);
+        var lead = LeadDataScope.GetVisibleLead(_db, User, leadId);
         if (lead is null) return RedirectToAction("List");
 
         if (!string.IsNullOrWhiteSpace(assignedEmployee) && !string.IsNullOrWhiteSpace(assignmentDate))
@@ -472,7 +564,7 @@ public class LeadController : Controller
         string? discount, string? tax, string? validUntil, string? terms, string? notes, string? status, IFormFile? attachment,
         string? taxRate, string? taxName, string? taxType)
     {
-        var lead = LeadStore.GetById(leadId);
+        var lead = LeadDataScope.GetVisibleLead(_db, User, leadId);
         if (lead is null) return RedirectToAction("List");
 
         var items = BuildLineItems(itemName, itemQty, itemRate);
@@ -515,6 +607,7 @@ public class LeadController : Controller
         if (terms != null) entry.TermsConditions = terms;
         entry.Notes = notes ?? "";
         entry.Status = !string.IsNullOrWhiteSpace(status) ? status : (!string.IsNullOrWhiteSpace(entry.Status) ? entry.Status : "Draft");
+        entry.AdminId = lead.AdminId;
 
         if (existing is null) lead.Estimations.Add(entry);
 
@@ -524,7 +617,7 @@ public class LeadController : Controller
     [HttpPost]
     public IActionResult DeleteEstimation(string leadId, string number)
     {
-        var lead = LeadStore.GetById(leadId);
+        var lead = LeadDataScope.GetVisibleLead(_db, User, leadId);
         if (lead is not null)
         {
             var existing = lead.Estimations.FirstOrDefault(e => e.Number == number);
@@ -546,7 +639,7 @@ public class LeadController : Controller
         string? discount, string? tax, string? validUntil, string? terms, string? notes, string? status, IFormFile? attachment,
         string? taxRate, string? taxName, string? taxType)
     {
-        var lead = LeadStore.GetById(leadId);
+        var lead = LeadDataScope.GetVisibleLead(_db, User, leadId);
         if (lead is null) return RedirectToAction("List");
 
         var items = BuildLineItems(itemName, itemQty, itemRate);
@@ -588,6 +681,7 @@ public class LeadController : Controller
         if (terms != null) entry.TermsConditions = terms;
         entry.Notes = notes ?? "";
         entry.Status = !string.IsNullOrWhiteSpace(status) ? status : (!string.IsNullOrWhiteSpace(entry.Status) ? entry.Status : "Draft");
+        entry.AdminId = lead.AdminId;
 
         if (existing is null) lead.Quotations.Add(entry);
 
@@ -597,7 +691,7 @@ public class LeadController : Controller
     [HttpPost]
     public IActionResult DeleteQuotation(string leadId, string number)
     {
-        var lead = LeadStore.GetById(leadId);
+        var lead = LeadDataScope.GetVisibleLead(_db, User, leadId);
         if (lead is not null)
         {
             var existing = lead.Quotations.FirstOrDefault(q => q.Number == number);
@@ -619,7 +713,7 @@ public class LeadController : Controller
         string? budget, string? terms, string? notes, string? status, IFormFile? attachment,
         string? taxRate, string? taxName, string? taxType)
     {
-        var lead = LeadStore.GetById(leadId);
+        var lead = LeadDataScope.GetVisibleLead(_db, User, leadId);
         if (lead is null) return RedirectToAction("List");
 
         var existing = string.IsNullOrWhiteSpace(number) ? null : lead.Proposals.FirstOrDefault(p => p.Number == number);
@@ -653,6 +747,7 @@ public class LeadController : Controller
         if (terms != null) entry.TermsConditions = terms;
         entry.Notes = notes ?? (description ?? "");
         entry.Status = !string.IsNullOrWhiteSpace(status) ? status : (!string.IsNullOrWhiteSpace(entry.Status) ? entry.Status : "Draft");
+        entry.AdminId = lead.AdminId;
 
         if (existing is null) lead.Proposals.Add(entry);
 
@@ -662,7 +757,7 @@ public class LeadController : Controller
     [HttpPost]
     public IActionResult DeleteProposal(string leadId, string number)
     {
-        var lead = LeadStore.GetById(leadId);
+        var lead = LeadDataScope.GetVisibleLead(_db, User, leadId);
         if (lead is not null)
         {
             var existing = lead.Proposals.FirstOrDefault(p => p.Number == number);

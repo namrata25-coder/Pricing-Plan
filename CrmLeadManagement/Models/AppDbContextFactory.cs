@@ -31,7 +31,7 @@ public class AppDbContextFactory : IDesignTimeDbContextFactory<AppDbContext>
 
         if (!string.IsNullOrWhiteSpace(configConn) && !configConn.Contains("trusted_connection", StringComparison.OrdinalIgnoreCase))
         {
-            connectionString = ConnectionStringHelper.FromUrl(configConn);
+            connectionString = ConnectionStringHelper.PreferIpv4(ConnectionStringHelper.FromUrl(configConn));
         }
         else
         {
@@ -52,7 +52,11 @@ public class AppDbContextFactory : IDesignTimeDbContextFactory<AppDbContext>
         }
 
         var optionsBuilder = new DbContextOptionsBuilder<AppDbContext>();
-        optionsBuilder.UseNpgsql(connectionString);
+        optionsBuilder.UseNpgsql(connectionString, npgsql =>
+        {
+            npgsql.EnableRetryOnFailure(5, TimeSpan.FromSeconds(8), null);
+            npgsql.CommandTimeout(60);
+        });
 
         return new AppDbContext(optionsBuilder.Options);
     }

@@ -1,0 +1,369 @@
+@model PayrollPageViewModel
+@{
+    var sectionTitle = ViewData["PayrollSectionTitle"] as string ?? "Payroll";
+    ViewData["Title"] = sectionTitle;
+    var activePage = ViewData["ActivePage"] as string ?? "";
+    var categories = ViewBag.ExpenseCategories as string[] ?? Array.Empty<string>();
+    var paymentMethods = ViewBag.PaymentMethods as string[] ?? new[] { "Bank Transfer", "UPI", "Cash", "Cheque" };
+    var monthNumber = Model.Month >= 1 && Model.Month <= 12 ? Model.Month : DateTime.Today.Month;
+    var monthName = System.Globalization.CultureInfo.CurrentCulture.DateTimeFormat.GetMonthName(monthNumber);
+    var currency = System.Globalization.CultureInfo.GetCultureInfo("en-IN");
+    var subtitle = activePage switch
+    {
+        "PayrollDashboard" => "Manage monthly payroll processing and employee payments.",
+        "PayrollEmployeeSalary" => "Set up employee compensation and payment preferences.",
+        "PayrollExpenses" => "Track and manage expenses related to payroll.",
+        "PayrollOvertimeRequest" => "Review overtime hours and approval status.",
+        "PayrollReports" => "Review payroll, expense, and overtime totals by month.",
+        _ => "Manage payroll operations."
+    };
+}
+
+<main class="payroll-page">
+    <header class="payroll-page-header">
+        <div>
+            <div class="payroll-breadcrumb"><span>Administration</span><i class="bi bi-chevron-right"></i><span>Payroll</span></div>
+            <h1><span class="payroll-title-icon"><i class="bi bi-cash-coin"></i></span>@sectionTitle</h1>
+            <p>@subtitle</p>
+        </div>
+        @if (activePage == "PayrollDashboard" || activePage == "PayrollReports")
+        {
+            <div class="payroll-period-chip"><i class="bi bi-calendar3"></i><span>@monthName @Model.Year</span></div>
+        }
+    </header>
+
+    <nav class="payroll-tabs" aria-label="Payroll modules">
+        <a asp-controller="Payroll" asp-action="Index" class="payroll-tab @(activePage == "PayrollDashboard" ? "active" : "")"><i class="bi bi-cash-stack"></i><span>Payroll</span></a>
+        <a asp-controller="Payroll" asp-action="EmployeeSalary" class="payroll-tab @(activePage == "PayrollEmployeeSalary" ? "active" : "")"><i class="bi bi-person-vcard"></i><span>Employee Salary</span></a>
+        <a asp-controller="Payroll" asp-action="Expenses" class="payroll-tab @(activePage == "PayrollExpenses" ? "active" : "")"><i class="bi bi-receipt"></i><span>Payroll Expenses</span></a>
+        <a asp-controller="Payroll" asp-action="OvertimeRequest" class="payroll-tab @(activePage == "PayrollOvertimeRequest" ? "active" : "")"><i class="bi bi-clock-history"></i><span>Overtime Request</span></a>
+        <a asp-controller="Payroll" asp-action="Reports" class="payroll-tab @(activePage == "PayrollReports" ? "active" : "")"><i class="bi bi-bar-chart-line"></i><span>Reports</span></a>
+    </nav>
+
+    @if (TempData["SuccessMessage"] is string successMessage)
+    {
+        <div class="payroll-alert success" role="status"><i class="bi bi-check-circle-fill"></i><span>@successMessage</span></div>
+    }
+    @if (TempData["ErrorMessage"] is string errorMessage)
+    {
+        <div class="payroll-alert error" role="alert"><i class="bi bi-exclamation-circle-fill"></i><span>@errorMessage</span></div>
+    }
+
+    @if (activePage == "PayrollDashboard")
+    {
+        <section class="payroll-panel payroll-period-panel">
+            <div class="payroll-panel-heading">
+                <div>
+                    <h2>Payroll period</h2>
+                    <p>Select a month to review or process payroll.</p>
+                </div>
+                <span class="payroll-period-tag"><i class="bi bi-calendar3"></i>@monthName @Model.Year</span>
+            </div>
+            <div class="payroll-panel-body">
+                <div class="payroll-period-actions">
+                    <form asp-action="Index" method="get" class="payroll-filter-form">
+                        <div class="payroll-field">
+                            <label for="month">Month</label>
+                            <select id="month" name="month">
+                                @for (var month = 1; month <= 12; month++)
+                                {
+                                    <option value="@month" selected="@(month == Model.Month)">@System.Globalization.CultureInfo.CurrentCulture.DateTimeFormat.GetMonthName(month)</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="payroll-field payroll-year-field">
+                            <label for="year">Year</label>
+                            <input id="year" name="year" type="number" min="2000" max="@(DateTime.Today.Year + 5)" value="@Model.Year" />
+                        </div>
+                        <button class="btn btn-outline" type="submit"><i class="bi bi-funnel"></i> View period</button>
+                    </form>
+                    <form asp-action="ProcessPayroll" method="post">
+                        <input type="hidden" name="month" value="@Model.Month" />
+                        <input type="hidden" name="year" value="@Model.Year" />
+                        <button class="btn btn-primary" type="submit"><i class="bi bi-play-fill"></i> Process payroll</button>
+                    </form>
+                </div>
+            </div>
+        </section>
+
+        <section class="payroll-stats" aria-label="Payroll summary">
+            <article class="payroll-stat-card">
+                <div class="payroll-stat-top"><span class="payroll-stat-icon blue"><i class="bi bi-people"></i></span><span class="payroll-stat-note">This period</span></div>
+                <div class="payroll-stat-value">@Model.PayrollRecords.Count</div><div class="payroll-stat-label">Employees processed</div>
+            </article>
+            <article class="payroll-stat-card">
+                <div class="payroll-stat-top"><span class="payroll-stat-icon violet"><i class="bi bi-wallet2"></i></span><span class="payroll-stat-note">Before deductions</span></div>
+                <div class="payroll-stat-value">₹@Model.PayrollRecords.Sum(r => r.GrossPay).ToString("N2", currency)</div><div class="payroll-stat-label">Gross payroll</div>
+            </article>
+            <article class="payroll-stat-card">
+                <div class="payroll-stat-top"><span class="payroll-stat-icon green"><i class="bi bi-cash-coin"></i></span><span class="payroll-stat-note">After deductions</span></div>
+                <div class="payroll-stat-value">₹@Model.PayrollRecords.Sum(r => r.NetPay).ToString("N2", currency)</div><div class="payroll-stat-label">Net payable</div>
+            </article>
+            <article class="payroll-stat-card">
+                <div class="payroll-stat-top"><span class="payroll-stat-icon amber"><i class="bi bi-hourglass-split"></i></span><span class="payroll-stat-note">Awaiting payment</span></div>
+                <div class="payroll-stat-value">@Model.PayrollRecords.Count(r => r.Status != "Paid")</div><div class="payroll-stat-label">Unpaid records</div>
+            </article>
+        </section>
+
+        <section class="payroll-panel">
+            <div class="payroll-panel-heading">
+                <div><h2>Payroll records</h2><p>@monthName @Model.Year</p></div>
+                <span class="payroll-count">@Model.PayrollRecords.Count records</span>
+            </div>
+            <div class="payroll-table-wrap">
+                <table class="payroll-table">
+                    <thead><tr><th>Employee</th><th class="text-end">Basic</th><th class="text-end">Allowances</th><th class="text-end">Overtime</th><th class="text-end">Deductions</th><th class="text-end">Gross</th><th class="text-end">Net pay</th><th>Status</th><th>Action</th></tr></thead>
+                    <tbody>
+                    @if (Model.PayrollRecords.Count == 0)
+                    {
+                        <tr><td colspan="9"><div class="payroll-empty"><span><i class="bi bi-inbox"></i></span><strong>No payroll records yet</strong><small>Add salary profiles, then process payroll for this month.</small></div></td></tr>
+                    }
+                    @foreach (var record in Model.PayrollRecords)
+                    {
+                        <tr>
+                            <td><div class="payroll-person"><span class="payroll-avatar">@(string.IsNullOrWhiteSpace(record.EmployeeName) ? "?" : record.EmployeeName.Substring(0, 1).ToUpperInvariant())</span><strong>@record.EmployeeName</strong></div></td>
+                            <td class="text-end">₹@record.BasicSalary.ToString("N2", currency)</td>
+                            <td class="text-end">₹@record.Allowances.ToString("N2", currency)</td>
+                            <td class="text-end">₹@record.OvertimePay.ToString("N2", currency)</td>
+                            <td class="text-end">₹@record.Deductions.ToString("N2", currency)</td>
+                            <td class="text-end">₹@record.GrossPay.ToString("N2", currency)</td>
+                            <td class="text-end payroll-amount">₹@record.NetPay.ToString("N2", currency)</td>
+                            <td><span class="payroll-status @(record.Status == "Paid" ? "paid" : "pending")"><i class="bi @(record.Status == "Paid" ? "bi-check-circle-fill" : "bi-clock-fill")"></i>@record.Status</span></td>
+                            <td>
+                                @if (record.Status != "Paid")
+                                {
+                                    <form asp-action="MarkPayrollPaid" method="post">
+                                        <input type="hidden" name="id" value="@record.Id" />
+                                        <input type="hidden" name="month" value="@Model.Month" />
+                                        <input type="hidden" name="year" value="@Model.Year" />
+                                        <button class="btn btn-sm btn-soft" type="submit"><i class="bi bi-check2"></i> Mark paid</button>
+                                    </form>
+                                }
+                                else
+                                {
+                                    <span class="payroll-date-note">@(record.PaidAt?.ToString("dd MMM yyyy") ?? "Paid")</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    }
+    else if (activePage == "PayrollEmployeeSalary")
+    {
+        <section class="payroll-stats" aria-label="Salary summary">
+            <article class="payroll-stat-card"><div class="payroll-stat-top"><span class="payroll-stat-icon blue"><i class="bi bi-person-check"></i></span><span class="payroll-stat-note">Configured</span></div><div class="payroll-stat-value">@Model.Salaries.Count</div><div class="payroll-stat-label">Salary profiles</div></article>
+            <article class="payroll-stat-card"><div class="payroll-stat-top"><span class="payroll-stat-icon violet"><i class="bi bi-cash-stack"></i></span><span class="payroll-stat-note">Per month</span></div><div class="payroll-stat-value">₹@Model.Salaries.Sum(s => s.BasicSalary).ToString("N2", currency)</div><div class="payroll-stat-label">Total basic salary</div></article>
+            <article class="payroll-stat-card"><div class="payroll-stat-top"><span class="payroll-stat-icon green"><i class="bi bi-plus-circle"></i></span><span class="payroll-stat-note">Per month</span></div><div class="payroll-stat-value">₹@Model.Salaries.Sum(s => s.Allowances).ToString("N2", currency)</div><div class="payroll-stat-label">Total allowances</div></article>
+            <article class="payroll-stat-card"><div class="payroll-stat-top"><span class="payroll-stat-icon amber"><i class="bi bi-dash-circle"></i></span><span class="payroll-stat-note">Per month</span></div><div class="payroll-stat-value">₹@Model.Salaries.Sum(s => s.Deductions).ToString("N2", currency)</div><div class="payroll-stat-label">Total deductions</div></article>
+        </section>
+
+        <div class="payroll-content-grid salary-grid">
+            <section class="payroll-panel payroll-form-panel">
+                <div class="payroll-panel-heading"><div><h2>@(Model.SalaryForm.Id == 0 ? "Set employee salary" : "Edit employee salary")</h2><p>Enter monthly compensation details.</p></div></div>
+                <div class="payroll-panel-body">
+                    <form asp-action="SaveSalary" method="post">
+                        <input asp-for="SalaryForm.Id" type="hidden" />
+                        <div class="payroll-form-grid">
+                            <div class="payroll-field full"><label asp-for="SalaryForm.EmployeeId">Employee</label><select asp-for="SalaryForm.EmployeeId" required><option value="">Select employee</option>@foreach (var employee in Model.Employees) { <option value="@employee.Id">@employee.Name</option> }</select></div>
+                            <div class="payroll-field"><label asp-for="SalaryForm.BasicSalary">Monthly basic salary <span>(₹)</span></label><input asp-for="SalaryForm.BasicSalary" type="number" min="0" step="0.01" required /></div>
+                            <div class="payroll-field"><label asp-for="SalaryForm.Allowances">Monthly allowances <span>(₹)</span></label><input asp-for="SalaryForm.Allowances" type="number" min="0" step="0.01" /></div>
+                            <div class="payroll-field"><label asp-for="SalaryForm.Deductions">Monthly deductions <span>(₹)</span></label><input asp-for="SalaryForm.Deductions" type="number" min="0" step="0.01" /></div>
+                            <div class="payroll-field"><label asp-for="SalaryForm.EffectiveFrom">Effective from</label><input asp-for="SalaryForm.EffectiveFrom" type="date" required /><small>Mid-month changes are prorated.</small></div>
+                            <div class="payroll-field full"><label asp-for="SalaryForm.PaymentMethod">Payment method</label><select asp-for="SalaryForm.PaymentMethod">@foreach (var method in paymentMethods) { <option value="@method">@method</option> }</select></div>
+                            <div class="payroll-field full"><label asp-for="SalaryForm.Notes">Notes <span>(optional)</span></label><textarea asp-for="SalaryForm.Notes" rows="3"></textarea></div>
+                        </div>
+                        <div class="payroll-form-actions"><button class="btn btn-primary" type="submit"><i class="bi bi-check2"></i> Save salary</button>@if (Model.SalaryForm.Id != 0) { <a asp-action="EmployeeSalary" class="btn btn-outline">Cancel</a> }</div>
+                    </form>
+                </div>
+            </section>
+
+            <section class="payroll-panel">
+                <div class="payroll-panel-heading"><div><h2>Employee salary profiles</h2><p>Compensation details used when payroll is processed.</p></div><span class="payroll-count">@Model.Salaries.Count total</span></div>
+                <div class="payroll-table-wrap">
+                    <table class="payroll-table">
+                        <thead><tr><th>Employee</th><th class="text-end">Basic</th><th class="text-end">Allowances</th><th class="text-end">Deductions</th><th>Effective from</th><th>Payment</th><th>Actions</th></tr></thead>
+                        <tbody>
+                        @if (Model.Salaries.Count == 0) { <tr><td colspan="7"><div class="payroll-empty"><span><i class="bi bi-person-vcard"></i></span><strong>No salary profiles</strong><small>Choose an employee and add their monthly salary details.</small></div></td></tr> }
+                        @foreach (var salary in Model.Salaries)
+                        {
+                            <tr>
+                                <td><div class="payroll-person"><span class="payroll-avatar">@(!string.IsNullOrWhiteSpace(salary.EmployeeName) ? salary.EmployeeName.Substring(0, 1).ToUpperInvariant() : "?")</span><strong>@salary.EmployeeName</strong></div></td>
+                                <td class="text-end">₹@salary.BasicSalary.ToString("N2", currency)</td><td class="text-end">₹@salary.Allowances.ToString("N2", currency)</td><td class="text-end">₹@salary.Deductions.ToString("N2", currency)</td>
+                                <td>@salary.EffectiveFrom.ToString("dd MMM yyyy")</td><td>@salary.PaymentMethod</td>
+                                <td><div class="payroll-actions"><a asp-action="EmployeeSalary" asp-route-editId="@salary.Id" class="payroll-icon-action" title="Edit salary" aria-label="Edit salary"><i class="bi bi-pencil"></i></a>
+                                    <form asp-action="DeleteSalary" method="post"><input type="hidden" name="id" value="@salary.Id" /><button class="payroll-icon-action danger" type="submit" title="Delete salary" aria-label="Delete salary"><i class="bi bi-trash3"></i></button></form></div></td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+                @if (Model.Employees.Count == 0) { <div class="payroll-inline-note"><i class="bi bi-info-circle"></i>No team members are available for salary setup.</div> }
+            </section>
+        </div>
+    }
+    else if (activePage == "PayrollExpenses")
+    {
+        <section class="payroll-stats" aria-label="Expense summary">
+            <article class="payroll-stat-card"><div class="payroll-stat-top"><span class="payroll-stat-icon blue"><i class="bi bi-receipt"></i></span><span class="payroll-stat-note">All records</span></div><div class="payroll-stat-value">@Model.Expenses.Count</div><div class="payroll-stat-label">Payroll expenses</div></article>
+            <article class="payroll-stat-card"><div class="payroll-stat-top"><span class="payroll-stat-icon violet"><i class="bi bi-currency-rupee"></i></span><span class="payroll-stat-note">All statuses</span></div><div class="payroll-stat-value">₹@Model.Expenses.Sum(e => e.Amount).ToString("N2", currency)</div><div class="payroll-stat-label">Total expenses</div></article>
+            <article class="payroll-stat-card"><div class="payroll-stat-top"><span class="payroll-stat-icon amber"><i class="bi bi-hourglass"></i></span><span class="payroll-stat-note">Awaiting payment</span></div><div class="payroll-stat-value">₹@Model.Expenses.Where(e => e.Status == "Pending").Sum(e => e.Amount).ToString("N2", currency)</div><div class="payroll-stat-label">Pending expenses</div></article>
+            <article class="payroll-stat-card"><div class="payroll-stat-top"><span class="payroll-stat-icon green"><i class="bi bi-check-circle"></i></span><span class="payroll-stat-note">Settled</span></div><div class="payroll-stat-value">₹@Model.Expenses.Where(e => e.Status == "Paid").Sum(e => e.Amount).ToString("N2", currency)</div><div class="payroll-stat-label">Paid expenses</div></article>
+        </section>
+
+        <section class="payroll-panel payroll-form-panel">
+            <div class="payroll-panel-heading"><div><h2>@(Model.ExpenseForm.Id == 0 ? "Record payroll expense" : "Edit payroll expense")</h2><p>Add an expense, associate it with an employee if needed, and track its payment status.</p></div></div>
+            <div class="payroll-panel-body">
+                <form asp-action="SaveExpense" method="post">
+                    <input asp-for="ExpenseForm.Id" type="hidden" />
+                    <div class="payroll-form-grid expense-form-grid">
+                        <div class="payroll-field"><label asp-for="ExpenseForm.ExpenseDate">Expense date</label><input asp-for="ExpenseForm.ExpenseDate" type="date" required /></div>
+                        <div class="payroll-field"><label asp-for="ExpenseForm.Category">Category</label><select asp-for="ExpenseForm.Category" required><option value="">Select category</option>@foreach (var category in categories) { <option value="@category">@category</option> }</select></div>
+                        <div class="payroll-field"><label asp-for="ExpenseForm.Description">Description</label><input asp-for="ExpenseForm.Description" maxlength="250" required /></div>
+                        <div class="payroll-field"><label asp-for="ExpenseForm.Amount">Amount <span>(₹)</span></label><input asp-for="ExpenseForm.Amount" type="number" min="0.01" step="0.01" required /></div>
+                        <div class="payroll-field"><label asp-for="ExpenseForm.EmployeeId">Employee <span>(optional)</span></label><select asp-for="ExpenseForm.EmployeeId"><option value="">Company expense</option>@foreach (var employee in Model.Employees) { <option value="@employee.Id">@employee.Name</option> }</select></div>
+                        <div class="payroll-field"><label asp-for="ExpenseForm.PaymentMethod">Payment method</label><select asp-for="ExpenseForm.PaymentMethod">@foreach (var method in paymentMethods) { <option value="@method">@method</option> }</select></div>
+                        <div class="payroll-field"><label asp-for="ExpenseForm.Status">Payment status</label><select asp-for="ExpenseForm.Status"><option value="Pending">Pending</option><option value="Paid">Paid</option></select></div>
+                        <div class="payroll-field"><label asp-for="ExpenseForm.Notes">Notes <span>(optional)</span></label><input asp-for="ExpenseForm.Notes" maxlength="1000" /></div>
+                    </div>
+                    <div class="payroll-form-actions"><button class="btn btn-primary" type="submit"><i class="bi bi-check2"></i> Save expense</button>@if (Model.ExpenseForm.Id != 0) { <a asp-action="Expenses" class="btn btn-outline">Cancel</a> }</div>
+                </form>
+            </div>
+        </section>
+
+        <section class="payroll-panel payroll-list-panel">
+            <div class="payroll-panel-heading"><div><h2>Expense records</h2><p>All company payroll-related expenses.</p></div><span class="payroll-count">@Model.Expenses.Count records</span></div>
+            <div class="payroll-table-wrap">
+                <table class="payroll-table">
+                    <thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Employee</th><th class="text-end">Amount</th><th>Payment</th><th>Status</th><th>Actions</th></tr></thead>
+                    <tbody>
+                    @if (Model.Expenses.Count == 0) { <tr><td colspan="8"><div class="payroll-empty"><span><i class="bi bi-receipt"></i></span><strong>No expenses recorded</strong><small>New payroll expenses will appear here.</small></div></td></tr> }
+                    @foreach (var expense in Model.Expenses)
+                    {
+                        <tr><td>@expense.ExpenseDate.ToString("dd MMM yyyy")</td><td><span class="payroll-category">@expense.Category</span></td><td class="payroll-description">@expense.Description</td><td>@(expense.EmployeeName ?? "Company")</td><td class="text-end payroll-amount">₹@expense.Amount.ToString("N2", currency)</td>
+                            <td>@expense.PaymentMethod</td><td><span class="payroll-status @(expense.Status == "Paid" ? "paid" : "pending")"><i class="bi @(expense.Status == "Paid" ? "bi-check-circle-fill" : "bi-clock-fill")"></i>@expense.Status</span></td>
+                            <td><div class="payroll-actions"><a asp-action="Expenses" asp-route-editId="@expense.Id" class="payroll-icon-action" title="Edit expense" aria-label="Edit expense"><i class="bi bi-pencil"></i></a>
+                                <form asp-action="DeleteExpense" method="post"><input type="hidden" name="id" value="@expense.Id" /><button class="payroll-icon-action danger" type="submit" title="Delete expense" aria-label="Delete expense"><i class="bi bi-trash3"></i></button></form></div></td></tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    }
+    else if (activePage == "PayrollOvertimeRequest")
+    {
+        <section class="payroll-stats" aria-label="Overtime summary">
+            <article class="payroll-stat-card"><div class="payroll-stat-top"><span class="payroll-stat-icon amber"><i class="bi bi-hourglass-split"></i></span><span class="payroll-stat-note">Needs review</span></div><div class="payroll-stat-value">@Model.OvertimeRequests.Count(o => o.Status == "Pending")</div><div class="payroll-stat-label">Pending requests</div></article>
+            <article class="payroll-stat-card"><div class="payroll-stat-top"><span class="payroll-stat-icon blue"><i class="bi bi-check2-circle"></i></span><span class="payroll-stat-note">Ready for payroll</span></div><div class="payroll-stat-value">@Model.OvertimeRequests.Count(o => o.Status == "Approved")</div><div class="payroll-stat-label">Approved requests</div></article>
+            <article class="payroll-stat-card"><div class="payroll-stat-top"><span class="payroll-stat-icon violet"><i class="bi bi-clock"></i></span><span class="payroll-stat-note">All requests</span></div><div class="payroll-stat-value">@Model.OvertimeRequests.Where(o => o.Status != "Rejected").Sum(o => o.Hours).ToString("N2")</div><div class="payroll-stat-label">Overtime hours</div></article>
+            <article class="payroll-stat-card"><div class="payroll-stat-top"><span class="payroll-stat-icon green"><i class="bi bi-currency-rupee"></i></span><span class="payroll-stat-note">Approved and paid</span></div><div class="payroll-stat-value">₹@Model.OvertimeRequests.Where(o => o.Status == "Approved" || o.Status == "Paid").Sum(o => o.TotalAmount).ToString("N2", currency)</div><div class="payroll-stat-label">Overtime amount</div></article>
+        </section>
+
+        <section class="payroll-panel payroll-form-panel">
+            <div class="payroll-panel-heading"><div><h2>@(Model.OvertimeForm.Id == 0 ? "Add overtime request" : "Edit overtime request")</h2><p>Log overtime hours for an employee. The request must be approved before payroll processing.</p></div></div>
+            <div class="payroll-panel-body">
+                <form asp-action="SaveOvertime" method="post">
+                    <input asp-for="OvertimeForm.Id" type="hidden" />
+                    <div class="payroll-form-grid expense-form-grid">
+                        <div class="payroll-field"><label asp-for="OvertimeForm.EmployeeId">Employee</label><select asp-for="OvertimeForm.EmployeeId" required><option value="">Select employee</option>@foreach (var employee in Model.Employees) { <option value="@employee.Id">@employee.Name</option> }</select></div>
+                        <div class="payroll-field"><label asp-for="OvertimeForm.WorkDate">Overtime date</label><input asp-for="OvertimeForm.WorkDate" type="date" required /></div>
+                        <div class="payroll-field"><label asp-for="OvertimeForm.Hours">Hours</label><input asp-for="OvertimeForm.Hours" type="number" min="0.01" max="24" step="0.01" required /></div>
+                        <div class="payroll-field"><label asp-for="OvertimeForm.HourlyRate">Hourly rate <span>(₹)</span></label><input asp-for="OvertimeForm.HourlyRate" type="number" min="0.01" step="0.01" required /></div>
+                        <div class="payroll-field expense-description-field"><label asp-for="OvertimeForm.Reason">Reason</label><input asp-for="OvertimeForm.Reason" maxlength="500" required /></div>
+                    </div>
+                    <div class="payroll-form-actions"><button class="btn btn-primary" type="submit"><i class="bi bi-check2"></i> Save request</button>@if (Model.OvertimeForm.Id != 0) { <a asp-action="OvertimeRequest" class="btn btn-outline">Cancel</a> }</div>
+                </form>
+            </div>
+        </section>
+
+        <section class="payroll-panel payroll-list-panel">
+            <div class="payroll-panel-heading"><div><h2>Overtime requests</h2><p>Approve requests to include them in the employee's payroll.</p></div><span class="payroll-count">@Model.OvertimeRequests.Count records</span></div>
+            <div class="payroll-table-wrap">
+                <table class="payroll-table">
+                    <thead><tr><th>Date</th><th>Employee</th><th class="text-end">Hours</th><th class="text-end">Rate</th><th class="text-end">Amount</th><th>Reason</th><th>Status</th><th>Actions</th></tr></thead>
+                    <tbody>
+                    @if (Model.OvertimeRequests.Count == 0) { <tr><td colspan="8"><div class="payroll-empty"><span><i class="bi bi-clock-history"></i></span><strong>No overtime requests</strong><small>Submitted requests will appear here for review.</small></div></td></tr> }
+                    @foreach (var request in Model.OvertimeRequests)
+                    {
+                        <tr><td>@request.WorkDate.ToString("dd MMM yyyy")</td><td><div class="payroll-person"><span class="payroll-avatar">@(!string.IsNullOrWhiteSpace(request.EmployeeName) ? request.EmployeeName.Substring(0, 1).ToUpperInvariant() : "?")</span><strong>@request.EmployeeName</strong></div></td>
+                            <td class="text-end">@request.Hours.ToString("N2")</td><td class="text-end">₹@request.HourlyRate.ToString("N2", currency)</td><td class="text-end payroll-amount">₹@request.TotalAmount.ToString("N2", currency)</td><td class="payroll-description">@request.Reason</td>
+                            <td><span class="payroll-status @(request.Status == "Paid" ? "paid" : request.Status == "Rejected" ? "rejected" : request.Status == "Approved" ? "approved" : "pending")"><i class="bi @(request.Status == "Paid" ? "bi-check-circle-fill" : request.Status == "Rejected" ? "bi-x-circle-fill" : request.Status == "Approved" ? "bi-check-circle" : "bi-clock-fill")"></i>@request.Status</span></td>
+                            <td>
+                                @if (!request.PayrollRecordId.HasValue)
+                                {
+                                    <div class="payroll-actions">
+                                        <a asp-action="OvertimeRequest" asp-route-editId="@request.Id" class="payroll-icon-action" title="Edit request" aria-label="Edit request"><i class="bi bi-pencil"></i></a>
+                                        @if (request.Status != "Approved") { <form asp-action="SetOvertimeStatus" method="post"><input type="hidden" name="id" value="@request.Id" /><input type="hidden" name="status" value="Approved" /><button class="payroll-icon-action approve" type="submit" title="Approve request" aria-label="Approve request"><i class="bi bi-check2"></i></button></form> }
+                                        @if (request.Status != "Rejected") { <form asp-action="SetOvertimeStatus" method="post"><input type="hidden" name="id" value="@request.Id" /><input type="hidden" name="status" value="Rejected" /><button class="payroll-icon-action danger" type="submit" title="Reject request" aria-label="Reject request"><i class="bi bi-x-lg"></i></button></form> }
+                                        <form asp-action="DeleteOvertime" method="post"><input type="hidden" name="id" value="@request.Id" /><button class="payroll-icon-action danger" type="submit" title="Delete request" aria-label="Delete request"><i class="bi bi-trash3"></i></button></form>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <span class="payroll-date-note">Included in payroll</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+            <div class="payroll-inline-note"><i class="bi bi-info-circle"></i>Approved overtime is added to the employee's payroll for the same month and marked paid when payroll is disbursed.</div>
+        </section>
+    }
+    else if (activePage == "PayrollReports")
+    {
+        <section class="payroll-panel payroll-period-panel">
+            <div class="payroll-panel-heading"><div><h2>Report period</h2><p>Choose the month and year you want to review.</p></div></div>
+            <div class="payroll-panel-body">
+                <form asp-action="Reports" method="get" class="payroll-filter-form">
+                    <div class="payroll-field"><label for="month">Month</label><select id="month" name="month">@for (var month = 1; month <= 12; month++) { <option value="@month" selected="@(month == Model.Month)">@System.Globalization.CultureInfo.CurrentCulture.DateTimeFormat.GetMonthName(month)</option> }</select></div>
+                    <div class="payroll-field payroll-year-field"><label for="year">Year</label><input id="year" name="year" type="number" min="2000" max="@(DateTime.Today.Year + 5)" value="@Model.Year" /></div>
+                    <button class="btn btn-primary" type="submit"><i class="bi bi-bar-chart-line"></i> Generate report</button>
+                </form>
+            </div>
+        </section>
+
+        <section class="payroll-stats" aria-label="Monthly report summary">
+            <article class="payroll-stat-card"><div class="payroll-stat-top"><span class="payroll-stat-icon violet"><i class="bi bi-wallet2"></i></span><span class="payroll-stat-note">@Model.PayrollRecords.Count employees</span></div><div class="payroll-stat-value">₹@Model.TotalGrossPay.ToString("N2", currency)</div><div class="payroll-stat-label">Gross payroll</div></article>
+            <article class="payroll-stat-card"><div class="payroll-stat-top"><span class="payroll-stat-icon green"><i class="bi bi-cash-coin"></i></span><span class="payroll-stat-note">@Model.PayrollRecords.Count records</span></div><div class="payroll-stat-value">₹@Model.TotalNetPay.ToString("N2", currency)</div><div class="payroll-stat-label">Net paid / payable</div></article>
+            <article class="payroll-stat-card"><div class="payroll-stat-top"><span class="payroll-stat-icon blue"><i class="bi bi-receipt"></i></span><span class="payroll-stat-note">@Model.Expenses.Count records</span></div><div class="payroll-stat-value">₹@Model.TotalExpenses.ToString("N2", currency)</div><div class="payroll-stat-label">Payroll expenses</div></article>
+            <article class="payroll-stat-card"><div class="payroll-stat-top"><span class="payroll-stat-icon amber"><i class="bi bi-clock-history"></i></span><span class="payroll-stat-note">Approved and paid</span></div><div class="payroll-stat-value">₹@Model.TotalOvertime.ToString("N2", currency)</div><div class="payroll-stat-label">Overtime amount</div></article>
+        </section>
+
+        <section class="payroll-panel payroll-list-panel">
+            <div class="payroll-panel-heading"><div><h2>Payroll summary</h2><p>@monthName @Model.Year</p></div><span class="payroll-count">@Model.PayrollRecords.Count employees</span></div>
+            <div class="payroll-table-wrap"><table class="payroll-table">
+                <thead><tr><th>Employee</th><th>Status</th><th class="text-end">Basic</th><th class="text-end">Allowances</th><th class="text-end">Overtime</th><th class="text-end">Deductions</th><th class="text-end">Net pay</th></tr></thead>
+                <tbody>
+                @if (Model.PayrollRecords.Count == 0) { <tr><td colspan="7"><div class="payroll-empty"><span><i class="bi bi-bar-chart"></i></span><strong>No payroll data for this period</strong><small>Processed payroll records will appear in this report.</small></div></td></tr> }
+                @foreach (var record in Model.PayrollRecords) { <tr><td><div class="payroll-person"><span class="payroll-avatar">@(!string.IsNullOrWhiteSpace(record.EmployeeName) ? record.EmployeeName.Substring(0, 1).ToUpperInvariant() : "?")</span><strong>@record.EmployeeName</strong></div></td><td><span class="payroll-status @(record.Status == "Paid" ? "paid" : "pending")">@record.Status</span></td><td class="text-end">₹@record.BasicSalary.ToString("N2", currency)</td><td class="text-end">₹@record.Allowances.ToString("N2", currency)</td><td class="text-end">₹@record.OvertimePay.ToString("N2", currency)</td><td class="text-end">₹@record.Deductions.ToString("N2", currency)</td><td class="text-end payroll-amount">₹@record.NetPay.ToString("N2", currency)</td></tr> }
+                </tbody>
+            </table></div>
+        </section>
+
+        <section class="payroll-panel payroll-list-panel">
+            <div class="payroll-panel-heading"><div><h2>Expense details</h2><p>@monthName @Model.Year</p></div><span class="payroll-count">@Model.Expenses.Count records</span></div>
+            <div class="payroll-table-wrap"><table class="payroll-table">
+                <thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Employee</th><th>Status</th><th class="text-end">Amount</th></tr></thead>
+                <tbody>
+                @if (Model.Expenses.Count == 0) { <tr><td colspan="6"><div class="payroll-empty"><span><i class="bi bi-receipt"></i></span><strong>No expenses for this period</strong><small>Payroll expenses will appear here after they are recorded.</small></div></td></tr> }
+                @foreach (var expense in Model.Expenses) { <tr><td>@expense.ExpenseDate.ToString("dd MMM yyyy")</td><td><span class="payroll-category">@expense.Category</span></td><td>@expense.Description</td><td>@(expense.EmployeeName ?? "Company")</td><td><span class="payroll-status @(expense.Status == "Paid" ? "paid" : "pending")">@expense.Status</span></td><td class="text-end payroll-amount">₹@expense.Amount.ToString("N2", currency)</td></tr> }
+                </tbody>
+            </table></div>
+        </section>
+
+        <section class="payroll-panel payroll-list-panel">
+            <div class="payroll-panel-heading"><div><h2>Overtime details</h2><p>@monthName @Model.Year</p></div><span class="payroll-count">@Model.OvertimeRequests.Count records</span></div>
+            <div class="payroll-table-wrap"><table class="payroll-table">
+                <thead><tr><th>Date</th><th>Employee</th><th class="text-end">Hours</th><th class="text-end">Amount</th><th>Status</th><th>Reason</th></tr></thead>
+                <tbody>
+                @if (Model.OvertimeRequests.Count == 0) { <tr><td colspan="6"><div class="payroll-empty"><span><i class="bi bi-clock-history"></i></span><strong>No overtime for this period</strong><small>Overtime requests will appear here.</small></div></td></tr> }
+                @foreach (var request in Model.OvertimeRequests) { <tr><td>@request.WorkDate.ToString("dd MMM yyyy")</td><td>@request.EmployeeName</td><td class="text-end">@request.Hours.ToString("N2")</td><td class="text-end payroll-amount">₹@request.TotalAmount.ToString("N2", currency)</td><td><span class="payroll-status @(request.Status == "Paid" ? "paid" : request.Status == "Rejected" ? "rejected" : request.Status == "Approved" ? "approved" : "pending")">@request.Status</span></td><td>@request.Reason</td></tr> }
+                </tbody>
+            </table></div>
+        </section>
+    }
+</main>

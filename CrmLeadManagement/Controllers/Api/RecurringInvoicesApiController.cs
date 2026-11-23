@@ -94,7 +94,8 @@ public class RecurringInvoicesApiController : ControllerBase
     {
         try
         {
-            var query = _db.WorkRecurringInvoices
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var query = WorkDataScope.RecurringInvoices(_db, currentUser)
                 .Include(r => r.Project)
                 .Include(r => r.Milestone)
                 .AsQueryable();
@@ -132,7 +133,8 @@ public class RecurringInvoicesApiController : ControllerBase
     {
         try
         {
-            var profile = await _db.WorkRecurringInvoices
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var profile = await WorkDataScope.RecurringInvoices(_db, currentUser)
                 .Include(r => r.Project)
                 .Include(r => r.Milestone)
                 .FirstOrDefaultAsync(r => r.Id == id);
@@ -185,6 +187,7 @@ public class RecurringInvoicesApiController : ControllerBase
             var profile = new WorkRecurringInvoice
             {
                 ProjectId       = input.ProjectId,
+                AdminId         = project.AdminId ?? PermissionChecker.GetCurrentUser(_db, User)?.GetEffectiveAdminId(),
                 MilestoneId     = input.MilestoneId > 0 ? input.MilestoneId : null,
                 ProfileNumber   = profileNumber,
                 Title           = string.IsNullOrWhiteSpace(input.Title) ? $"Recurring billing for {project.ProjectName}" : input.Title.Trim(),

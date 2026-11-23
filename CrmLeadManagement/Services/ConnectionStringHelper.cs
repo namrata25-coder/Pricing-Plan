@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using Npgsql;
 
 namespace CrmLeadManagement.Services;
@@ -20,7 +22,11 @@ public static class ConnectionStringHelper
             return string.Empty;
         }
 
-        var trimmed = connectionStringOrUrl.Trim();
+        var trimmed = connectionStringOrUrl.Trim().Trim('"', '\'').Trim();
+        if (string.IsNullOrWhiteSpace(trimmed) || trimmed == ";")
+        {
+            return string.Empty;
+        }
 
         // 1. If already in key-value connection string format (e.g. contains "Host=" or "Server=")
         if (trimmed.Contains("Host=", StringComparison.OrdinalIgnoreCase) ||
@@ -30,11 +36,8 @@ public static class ConnectionStringHelper
             {
                 var csb = new NpgsqlConnectionStringBuilder(trimmed);
                 // For remote hosts, ensure SSL is enabled by default if not explicitly specified
-                if (!IsLocalHost(csb.Host) && !trimmed.Contains("SSL Mode", StringComparison.OrdinalIgnoreCase) && !trimmed.Contains("SslMode", StringComparison.OrdinalIgnoreCase))
-                {
-                    csb.SslMode = SslMode.Require;
-                }
-                return csb.ConnectionString;
+                return Finalize(csb, sslModeSpecified: trimmed.Contains("SSL Mode", StringComparison.OrdinalIgnoreCase)
+                    || trimmed.Contains("SslMode", StringComparison.OrdinalIgnoreCase));
             }
             catch
             {
@@ -151,12 +154,69 @@ public static class ConnectionStringHelper
             }
         }
 
-        // Default SSL Mode if not explicitly provided in query parameters:
-        // - Localhost (127.0.0.1 / localhost): SSL Mode=Prefer
-        // - Remote / Render PostgreSQL: SSL Mode=Require
+        return Finalize(builder, sslModeSpecified);
+    }
+
+    /// <summary>
+    /// Render/Windows-friendly Npgsql settings: SSL, skipped channel binding (avoids SCRAM EOF),
+    /// longer timeouts for sleeping databases, and TCP keepalive.
+    /// </summary>
+    public static string ApplyRemotePostgresDefaults(string connectionString)
+    {
+        if (string.IsNullOrWhiteSpace(connectionString))
+            return connectionString;
+
+        var csb = new NpgsqlConnectionStringBuilder(connectionString);
+        return Finalize(csb, sslModeSpecified: true);
+    }
+
+    /// <summary>
+    /// Resolves a remote hostname to IPv4. Windows often tries IPv6 first, which Render Postgres
+    /// commonly drops mid-handshake with "Exception while reading from stream".
+    /// </summary>
+    public static string PreferIpv4(string connectionString)
+    {
+        if (string.IsNullOrWhiteSpace(connectionString))
+            return connectionString;
+
+        var csb = new NpgsqlConnectionStringBuilder(connectionString);
+        if (string.IsNullOrWhiteSpace(csb.Host) || IsLocalHost(csb.Host) || IPAddress.TryParse(csb.Host, out _))
+            return connectionString;
+
+        try
+        {
+            var ipv4 = Dns.GetHostAddresses(csb.Host)
+                .FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
+            if (ipv4 == null)
+                return connectionString;
+
+            csb.Host = ipv4.ToString();
+            return csb.ConnectionString;
+        }
+        catch
+        {
+            return connectionString;
+        }
+    }
+
+    static string Finalize(NpgsqlConnectionStringBuilder builder, bool sslModeSpecified)
+    {
         if (!sslModeSpecified)
         {
             builder.SslMode = IsLocalHost(builder.Host) ? SslMode.Prefer : SslMode.Require;
+        }
+
+        if (!IsLocalHost(builder.Host))
+        {
+            builder.ChannelBinding = ChannelBinding.Disable;
+            builder.SslMode = builder.SslMode == SslMode.Disable ? SslMode.Require : builder.SslMode;
+            if (builder.Timeout < 60)
+                builder.Timeout = 60;
+            if (builder.CommandTimeout < 60)
+                builder.CommandTimeout = 60;
+            builder.KeepAlive = 30;
+            builder.TcpKeepAlive = true;
+            builder.MaxPoolSize = Math.Min(builder.MaxPoolSize, 10);
         }
 
         return builder.ConnectionString;
@@ -176,7 +236,7 @@ public static class ConnectionStringHelper
         try
         {
             var csb = new NpgsqlConnectionStringBuilder(connectionString);
-            return $"Host='{csb.Host}', Port={csb.Port}, Database='{csb.Database}', Username='{csb.Username}', SslMode={csb.SslMode}";
+            return $"Host='{csb.Host}', Port={csb.Port}, Database='{csb.Database}', Username='{csb.Username}', SslMode={csb.SslMode}, ChannelBinding={csb.ChannelBinding}, Timeout={csb.Timeout}";
         }
         catch
         {

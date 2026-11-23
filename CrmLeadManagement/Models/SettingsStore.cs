@@ -15,6 +15,27 @@ public class UserRoleEntry
     public string? Role { get; set; } = "";
     public string? Status { get; set; } = "Active"; // Active / Inactive
     public string? ModulePermissions { get; set; } = ""; // Comma-separated list of permitted module names
+    public string? EmploymentType { get; set; }
+    public decimal? SalesTargetValue { get; set; }
+    public decimal? MinimumTargetValue { get; set; }
+    public decimal? AchievedTargetValue { get; set; }
+    public decimal? BelowTargetCommissionPercent { get; set; }
+    public decimal? AtOrAboveTargetCommissionPercent { get; set; }
+
+    // SaaS Multi-tenancy
+    public int? AdminId { get; set; }             // Tenant Admin ID. If Role == "Admin", matches own Id. If staff, matches Admin's Id. Null for Super Admin.
+    public string? AdminCode { get; set; }       // e.g. "ADM-1001", "ADM-1002"
+    public string? CompanyName { get; set; }     // e.g. "Acme Corp" or Organization Name
+    public string? Phone { get; set; }           // Admin or user phone number
+
+    public int? GetEffectiveAdminId()
+    {
+        if (string.Equals(Role, "Super Admin", StringComparison.OrdinalIgnoreCase))
+            return null; // Super Admin has global platform scope
+        if (string.Equals(Role, "Admin", StringComparison.OrdinalIgnoreCase))
+            return AdminId ?? (Id > 0 ? Id : null);
+        return AdminId;
+    }
 
     // Authentication fields
     [System.Text.Json.Serialization.JsonIgnore]
@@ -39,6 +60,7 @@ public class FollowUpSettings
 {
     // Always row Id = 1 — this is a single settings record, not a list.
     public int Id { get; set; } = 1;
+    public int? AdminId { get; set; }
     public int DefaultReminderDaysBefore { get; set; } = 1;
     public bool EnableEmailReminders { get; set; } = true;
     public bool EnableSmsReminders { get; set; } = false;
@@ -58,7 +80,34 @@ public static class SettingsStore
 
     public static List<string> Sources => DbAccessor.Db.SourceOptions.OrderBy(s => s.Id).Select(s => s.Value).ToList();
 
-    public static List<UserRoleEntry> Users => DbAccessor.Db.Users.OrderBy(u => u.Id).ToList();
+    public static List<UserRoleEntry> Users
+    {
+        get
+        {
+            var db = DbAccessor.Db;
+            var userPrincipal = DbAccessor.CurrentContext?.User;
+            if (userPrincipal != null)
+            {
+                var current = CrmLeadManagement.Security.PermissionChecker.GetCurrentUser(db, userPrincipal);
+                if (current != null)
+                {
+                    if (string.Equals(current.Role, "Super Admin", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return db.Users.OrderBy(u => u.Id).ToList();
+                    }
+                    var effectiveAdminId = current.GetEffectiveAdminId();
+                    if (effectiveAdminId.HasValue)
+                    {
+                        return db.Users
+                            .Where(u => u.AdminId == effectiveAdminId.Value || u.Id == effectiveAdminId.Value)
+                            .OrderBy(u => u.Id)
+                            .ToList();
+                    }
+                }
+            }
+            return db.Users.OrderBy(u => u.Id).ToList();
+        }
+    }
 
     /// <summary>Employee names, sourced from Users/Roles so Assign dropdowns stay in sync with Settings.</summary>
     public static List<string> Employees => Users.Where(u => !string.IsNullOrWhiteSpace(u.Name)).Select(u => u.Name!).ToList();
@@ -306,71 +355,167 @@ public static class SettingsStore
         {
             db.Users.AddRange(new List<UserRoleEntry>
             {
-                new UserRoleEntry{ Name="Ananya Sharma", Email="ananya.sharma@nimbuscrm.com", Role="Sales Manager", Status="Active" },
-                new UserRoleEntry{ Name="Rohit Verma", Email="rohit.verma@nimbuscrm.com", Role="Sales Executive", Status="Active" },
-                new UserRoleEntry{ Name="Priya Nair", Email="priya.nair@nimbuscrm.com", Role="Sales Executive", Status="Active" },
-                new UserRoleEntry{ Name="Karan Mehta", Email="karan.mehta@nimbuscrm.com", Role="Sales Executive", Status="Active" },
-                new UserRoleEntry{ Name="Sneha Kulkarni", Email="sneha.kulkarni@nimbuscrm.com", Role="Telecaller", Status="Active" },
-                new UserRoleEntry{ Name="Arjun Desai", Email="arjun.desai@nimbuscrm.com", Role="Telecaller", Status="Inactive" },
+                new UserRoleEntry{ Name="Ananya Sharma", Email="ananya.sharma@visioncrm.com", Role="Sales Manager", Status="Active" },
+                new UserRoleEntry{ Name="Rohit Verma", Email="rohit.verma@visioncrm.com", Role="Sales Executive", Status="Active" },
+                new UserRoleEntry{ Name="Priya Nair", Email="priya.nair@visioncrm.com", Role="Sales Executive", Status="Active" },
+                new UserRoleEntry{ Name="Karan Mehta", Email="karan.mehta@visioncrm.com", Role="Sales Executive", Status="Active" },
+                new UserRoleEntry{ Name="Sneha Kulkarni", Email="sneha.kulkarni@visioncrm.com", Role="Telecaller", Status="Active" },
+                new UserRoleEntry{ Name="Arjun Desai", Email="arjun.desai@visioncrm.com", Role="Telecaller", Status="Inactive" },
             });
         }
 
-        // Seed or update Admin from configuration ("Seed:AdminEmail", "Seed:AdminPassword"), never logging the password.
-        if (config != null)
+        // Migrate any legacy @nimbuscrm.com users to @visioncrm.com safely
+        var legacyUsers = db.Users.Where(u => u.Email != null && u.Email.Contains("@nimbuscrm.com")).ToList();
+        foreach (var lu in legacyUsers)
         {
-            var adminEmail = config["Seed:AdminEmail"]?.Trim();
-            var adminPassword = config["Seed:AdminPassword"]?.Trim();
-
-            if (!string.IsNullOrWhiteSpace(adminEmail) && !string.IsNullOrWhiteSpace(adminPassword))
+            var targetEmail = lu.Email.Replace("@nimbuscrm.com", "@visioncrm.com");
+            var existingWithTarget = db.Users.FirstOrDefault(u => u.Id != lu.Id && u.Email != null && u.Email.ToLower() == targetEmail.ToLower());
+            if (existingWithTarget != null)
             {
-                var existingAdmin = db.Users.FirstOrDefault(u => u.Email != null && u.Email.ToLower() == adminEmail.ToLower());
-                var hasher = new PasswordHasher<UserRoleEntry>();
-                if (existingAdmin == null)
+                bool hasLeads = db.Leads.Any(l => l.AdminId == lu.Id);
+                bool hasProjects = db.WorkProjects.Any(p => p.AdminId == lu.Id);
+                if (!hasLeads && !hasProjects)
                 {
-                    var admin = new UserRoleEntry
-                    {
-                        Name = "Administrator",
-                        Email = adminEmail,
-                        Role = "Admin",
-                        Status = "Active"
-                    };
-                    admin.PasswordHash = hasher.HashPassword(admin, adminPassword);
-                    db.Users.Add(admin);
-                    logger?.LogInformation("Seeded administrator account for {AdminEmail}.", adminEmail);
+                    var subs = db.CompanySubscriptions.Where(s => s.AdminId == lu.Id).ToList();
+                    if (subs.Any()) db.CompanySubscriptions.RemoveRange(subs);
+                    db.Users.Remove(lu);
                 }
                 else
                 {
-                    existingAdmin.Role = "Admin";
-                    existingAdmin.Status = "Active";
-                    // Requirement 1: Admin ka existing password same rehna chahiye. Admin ke password mein koi change nahi karna hai.
-                    if (string.IsNullOrWhiteSpace(existingAdmin.PasswordHash))
-                    {
-                        existingAdmin.PasswordHash = hasher.HashPassword(existingAdmin, adminPassword);
-                        logger?.LogInformation("Initialized missing password for administrator account {AdminEmail}.", adminEmail);
-                    }
-                    else
-                    {
-                        logger?.LogInformation("Preserved existing password for administrator account {AdminEmail}.", adminEmail);
-                    }
-                }
-
-                // Initialize individual distinct passwords for sample team members if they don't have a password yet,
-                // or if their password inadvertently matched the administrator's password.
-                // Each user has their own separate password linked to their database record; never sharing admin's password.
-                foreach (var user in db.Users.Where(u => u.Role != "Admin" && u.Role != "Super Admin"))
-                {
-                    bool isMatchingAdmin = !string.IsNullOrWhiteSpace(user.PasswordHash) &&
-                        hasher.VerifyHashedPassword(user, user.PasswordHash, adminPassword) == PasswordVerificationResult.Success;
-
-                    if (string.IsNullOrWhiteSpace(user.PasswordHash) || isMatchingAdmin)
-                    {
-                        var firstWord = (user.Name ?? "User").Split(' ')[0];
-                        var userDefaultPassword = $"{firstWord}@123!";
-                        user.PasswordHash = hasher.HashPassword(user, userDefaultPassword);
-                    }
+                    lu.Email = $"{lu.Email.Split('@')[0]}_{lu.Id}@visioncrm.com";
                 }
             }
+            else
+            {
+                lu.Email = targetEmail;
+            }
         }
+        if (legacyUsers.Any())
+        {
+            try { db.SaveChanges(); } catch (Exception ex) { logger?.LogWarning(ex, "Legacy user migration exception handled."); }
+        }
+
+        // Seed Super Admin and Admin accounts
+        var hasher = new PasswordHasher<UserRoleEntry>();
+
+        var superAdminEmail = config?["Seed:SuperAdminEmail"]?.Trim() ?? "superadmin@visioncrm.com";
+        var superAdminPassword = config?["Seed:SuperAdminPassword"]?.Trim() ?? "SuperAdmin123!";
+        var existingSuperAdmin = db.Users.FirstOrDefault(u => u.Email != null && (u.Email.ToLower() == superAdminEmail.ToLower() || u.Email.ToLower() == "superadmin@nimbuscrm.com"));
+        if (existingSuperAdmin == null)
+        {
+            var superAdmin = new UserRoleEntry
+            {
+                Name = "Super Administrator",
+                Email = superAdminEmail,
+                Role = "Super Admin",
+                Status = "Active",
+                AdminId = null,
+                AdminCode = "SAAS-ROOT",
+                CompanyName = "Vision SaaS Platform",
+                CreatedAt = DateTime.UtcNow
+            };
+            superAdmin.PasswordHash = hasher.HashPassword(superAdmin, superAdminPassword);
+            db.Users.Add(superAdmin);
+            db.SaveChanges();
+            logger?.LogInformation("Seeded Super Administrator account for {Email}.", superAdminEmail);
+        }
+        else
+        {
+            existingSuperAdmin.Role = "Super Admin";
+            existingSuperAdmin.Status = "Active";
+            existingSuperAdmin.Email = superAdminEmail;
+            if (string.IsNullOrWhiteSpace(existingSuperAdmin.AdminCode)) existingSuperAdmin.AdminCode = "SAAS-ROOT";
+            if (string.IsNullOrWhiteSpace(existingSuperAdmin.CompanyName) || existingSuperAdmin.CompanyName == "Nimbus SaaS Platform") existingSuperAdmin.CompanyName = "Vision SaaS Platform";
+            if (string.IsNullOrWhiteSpace(existingSuperAdmin.PasswordHash))
+            {
+                existingSuperAdmin.PasswordHash = hasher.HashPassword(existingSuperAdmin, superAdminPassword);
+            }
+        }
+
+        // Seed or update Admin from configuration ("Seed:AdminEmail", "Seed:AdminPassword"), never logging the password.
+        var adminEmail = config?["Seed:AdminEmail"]?.Trim() ?? "admin@visioncrm.com";
+        var adminPassword = config?["Seed:AdminPassword"]?.Trim() ?? "AdminPassword123!";
+        var existingAdmin = db.Users.FirstOrDefault(u => u.Email != null && (u.Email.ToLower() == adminEmail.ToLower() || u.Email.ToLower() == "admin@nimbuscrm.com"));
+        if (existingAdmin == null)
+        {
+            var admin = new UserRoleEntry
+            {
+                Name = "Administrator",
+                Email = adminEmail,
+                Role = "Admin",
+                Status = "Active",
+                AdminCode = "ADM-1001",
+                CompanyName = "Default Organization",
+                CreatedAt = DateTime.UtcNow
+            };
+            admin.PasswordHash = hasher.HashPassword(admin, adminPassword);
+            db.Users.Add(admin);
+            db.SaveChanges();
+            admin.AdminId = admin.Id;
+            db.SaveChanges();
+            existingAdmin = admin;
+            logger?.LogInformation("Seeded administrator account for {AdminEmail} with Admin ID {AdminCode}.", adminEmail, admin.AdminCode);
+        }
+        else
+        {
+            existingAdmin.Role = "Admin";
+            existingAdmin.Status = "Active";
+            existingAdmin.Email = adminEmail;
+            if (!existingAdmin.AdminId.HasValue) existingAdmin.AdminId = existingAdmin.Id;
+            if (string.IsNullOrWhiteSpace(existingAdmin.AdminCode)) existingAdmin.AdminCode = "ADM-1001";
+            if (string.IsNullOrWhiteSpace(existingAdmin.CompanyName)) existingAdmin.CompanyName = "Default Organization";
+            if (string.IsNullOrWhiteSpace(existingAdmin.PasswordHash))
+            {
+                existingAdmin.PasswordHash = hasher.HashPassword(existingAdmin, adminPassword);
+                logger?.LogInformation("Initialized missing password for administrator account {AdminEmail}.", adminEmail);
+            }
+            db.SaveChanges();
+        }
+
+        // Link existing team members to default admin and assign passwords
+        var defaultAdminId = existingAdmin.Id;
+        foreach (var user in db.Users.Where(u => u.Role != "Admin" && u.Role != "Super Admin"))
+        {
+            if (!user.AdminId.HasValue)
+            {
+                user.AdminId = defaultAdminId;
+                user.AdminCode = existingAdmin.AdminCode ?? "ADM-1001";
+                user.CompanyName = existingAdmin.CompanyName ?? "Default Organization";
+            }
+
+            bool isMatchingAdmin = !string.IsNullOrWhiteSpace(user.PasswordHash) &&
+                hasher.VerifyHashedPassword(user, user.PasswordHash, adminPassword) == PasswordVerificationResult.Success;
+
+            if (string.IsNullOrWhiteSpace(user.PasswordHash) || isMatchingAdmin)
+            {
+                var firstWord = (user.Name ?? "User").Split(' ')[0];
+                var userDefaultPassword = $"{firstWord}@123!";
+                user.PasswordHash = hasher.HashPassword(user, userDefaultPassword);
+            }
+        }
+        db.SaveChanges();
+
+        // Backfill existing Leads, Projects, and Work entities with default AdminId if not already set
+        foreach (var lead in db.Leads.Where(l => !l.AdminId.HasValue))
+        {
+            lead.AdminId = defaultAdminId;
+            lead.AdminCode = existingAdmin.AdminCode ?? "ADM-1001";
+        }
+        foreach (var p in db.WorkProjects.Where(p => !p.AdminId.HasValue))
+        {
+            p.AdminId = defaultAdminId;
+            p.AdminCode = existingAdmin.AdminCode ?? "ADM-1001";
+        }
+        foreach (var m in db.WorkMilestones.Where(m => !m.AdminId.HasValue)) { m.AdminId = defaultAdminId; }
+        foreach (var t in db.WorkTasks.Where(t => !t.AdminId.HasValue)) { t.AdminId = defaultAdminId; }
+        foreach (var i in db.WorkInvoices.Where(i => !i.AdminId.HasValue)) { i.AdminId = defaultAdminId; }
+        foreach (var pay in db.WorkPayments.Where(pay => !pay.AdminId.HasValue)) { pay.AdminId = defaultAdminId; }
+        foreach (var r in db.WorkRecurringInvoices.Where(r => !r.AdminId.HasValue)) { r.AdminId = defaultAdminId; }
+        foreach (var f in db.WorkFiles.Where(f => !f.AdminId.HasValue)) { f.AdminId = defaultAdminId; }
+        foreach (var ts in db.WorkTimesheets.Where(ts => !ts.AdminId.HasValue)) { ts.AdminId = defaultAdminId; }
+        foreach (var ex in db.WorkExpenses.Where(ex => !ex.AdminId.HasValue)) { ex.AdminId = defaultAdminId; }
+        foreach (var n in db.WorkNotes.Where(n => !n.AdminId.HasValue)) { n.AdminId = defaultAdminId; }
+        db.SaveChanges();
 
         if (!db.FollowUpSettings.Any())
         {
@@ -397,6 +542,334 @@ public static class SettingsStore
                 new TaxMaster { TaxName = "IGST 28%", TaxType = "IGST", TaxRate = 28.00m, Description = "Integrated GST (28% inter-state)", Status = "Active" },
                 new TaxMaster { TaxName = "Zero Tax 0%", TaxType = "GST", TaxRate = 0.00m, Description = "Zero Tax / Tax Exempt", Status = "Active" }
             });
+        }
+
+        // Seed Subscription Plans
+        if (!db.SubscriptionPlans.Any())
+        {
+            db.SubscriptionPlans.AddRange(new List<SaaSSubscriptionPlan>
+            {
+                new SaaSSubscriptionPlan
+                {
+                    Name = "Free Trial",
+                    Code = "trial",
+                    Price = 0m,
+                    BillingInterval = "7 Days",
+                    MaxLeads = 15,
+                    MaxTeamMembers = 3,
+                    MaxProjects = 5,
+                    TrialDays = 7,
+                    Description = "Full access to test drive the platform for 7 days",
+                    Features = "Lead Management & Pipeline\nFollow-ups & Reminders\nClient Requirements Tracking\nEmail Alerts & Notifications",
+                    IsPopular = false,
+                    IsActive = true,
+                    DisplayOrder = 1
+                },
+                new SaaSSubscriptionPlan
+                {
+                    Name = "Starter Plan",
+                    Code = "starter",
+                    Price = 500m,
+                    BillingInterval = "Monthly",
+                    MaxLeads = 100,
+                    MaxTeamMembers = 5,
+                    MaxProjects = 15,
+                    TrialDays = 0,
+                    Description = "Perfect for growing sales teams and small businesses",
+                    Features = "Lead Management & Pipeline\nAssigned Leads Tracking\nCall Logs & Call History\nFollow-ups & Reminders\nClient Requirements Tracking\nQuotations & Estimations\nGST Invoices & Payments\nEmail Alerts & Notifications",
+                    IsPopular = false,
+                    IsActive = true,
+                    DisplayOrder = 2
+                },
+                new SaaSSubscriptionPlan
+                {
+                    Name = "Professional Plan",
+                    Code = "pro",
+                    Price = 800m,
+                    BillingInterval = "Monthly",
+                    MaxLeads = 500,
+                    MaxTeamMembers = 15,
+                    MaxProjects = 50,
+                    TrialDays = 0,
+                    Description = "For scaling organizations needing deep work and finance tracking",
+                    Features = "Lead Management & Pipeline\nAssigned Leads Tracking\nCall Logs & Call History\nFollow-ups & Reminders\nClient Requirements Tracking\nQuotations & Estimations\nProposal Management\nGST Invoices & Payments\nProject & Milestone Tracking\nTask Management & Timesheets\nProject Documents & Files\nEmail Alerts & Notifications",
+                    IsPopular = true,
+                    IsActive = true,
+                    DisplayOrder = 3
+                },
+                new SaaSSubscriptionPlan
+                {
+                    Name = "Enterprise Plan",
+                    Code = "enterprise",
+                    Price = 1000m,
+                    BillingInterval = "Monthly",
+                    MaxLeads = 2500,
+                    MaxTeamMembers = 100,
+                    MaxProjects = 200,
+                    TrialDays = 0,
+                    Description = "High capacity and full customization for enterprise leaders",
+                    Features = "Lead Management & Pipeline\nAssigned Leads Tracking\nCall Logs & Call History\nFollow-ups & Reminders\nClient Requirements Tracking\nQuotations & Estimations\nProposal Management\nGST Invoices & Payments\nProject & Milestone Tracking\nTask Management & Timesheets\nProject Documents & Files\nReports & Analytics Export\nEmail Alerts & Notifications\nRoles & Permissions Control",
+                    IsPopular = false,
+                    IsActive = true,
+                    DisplayOrder = 4
+                }
+            });
+            db.SaveChanges();
+        }
+        else
+        {
+            // Sync realistic limits on existing plans
+            var existingPlans = db.SubscriptionPlans.ToList();
+            foreach (var p in existingPlans)
+            {
+                if (p.Code == "trial" || p.Name == "Free Trial")
+                {
+                    if (p.MaxLeads >= 999999 || p.MaxLeads == 0) p.MaxLeads = 15;
+                    if (p.MaxProjects == 0) p.MaxProjects = 5;
+                    if (p.MaxTeamMembers == 0) p.MaxTeamMembers = 3;
+                }
+                else if (p.Code == "starter" || p.Name == "Starter Plan")
+                {
+                    if (p.MaxLeads >= 999999 || p.MaxLeads == 0) p.MaxLeads = 100;
+                    if (p.MaxProjects == 0) p.MaxProjects = 15;
+                    if (p.MaxTeamMembers == 0) p.MaxTeamMembers = 5;
+                }
+                else if (p.Code == "pro" || p.Name == "Professional Plan")
+                {
+                    if (p.MaxLeads >= 999999 || p.MaxLeads == 0) p.MaxLeads = 500;
+                    if (p.MaxProjects == 0) p.MaxProjects = 50;
+                    if (p.MaxTeamMembers == 0) p.MaxTeamMembers = 15;
+                }
+                else if (p.Code == "enterprise" || p.Name == "Enterprise Plan")
+                {
+                    if (p.MaxLeads >= 999999 || p.MaxLeads == 0) p.MaxLeads = 2500;
+                    if (p.MaxProjects == 0) p.MaxProjects = 200;
+                    if (p.MaxTeamMembers == 0) p.MaxTeamMembers = 100;
+                }
+            }
+            db.SaveChanges();
+        }
+
+        // Seed Landing Page Config
+        if (!db.LandingPageConfigs.Any())
+        {
+            db.LandingPageConfigs.Add(new CmsLandingPageConfig
+            {
+                HeroTitle = "Empower Your Sales Team with Vision CRM SaaS",
+                HeroSubtitle = "The complete multi-tenant platform to capture leads, track projects, automate finance, and maximize customer retention.",
+                HeroBadge = "⚡ SaaS 2.0 Cloud Architecture",
+                CtaButtonText = "Get Started Free",
+                CtaButtonUrl = "/login",
+                FeaturesJson = "[{\"Title\":\"Lead Management\",\"Desc\":\"Capture and distribute leads instantly.\"},{\"Title\":\"Project Workflows\",\"Desc\":\"Milestones, tasks, and timesheets in one place.\"},{\"Title\":\"Automated Billing\",\"Desc\":\"Invoicing, recurring profiles, and payments.\"}]",
+                StatsJson = "[{\"Number\":\"500+\",\"Label\":\"Active Companies\"},{\"Number\":\"2M+\",\"Label\":\"Leads Processed\"},{\"Number\":\"99.9%\",\"Label\":\"Uptime SLA\"}]",
+                UpdatedAt = DateTime.UtcNow
+            });
+        }
+
+        // Seed FAQ Articles
+        if (!db.FaqArticles.Any())
+        {
+            db.FaqArticles.AddRange(new List<CmsFaqArticle>
+            {
+                new CmsFaqArticle
+                {
+                    Question = "How does the 14-day free trial work?",
+                    Answer = "You get instant access to Vision CRM with 100 leads quota and up to 3 team members for 14 days without requiring any credit card.",
+                    Category = "General",
+                    DisplayOrder = 1,
+                    IsActive = true
+                },
+                new CmsFaqArticle
+                {
+                    Question = "Can I upgrade or downgrade my subscription anytime?",
+                    Answer = "Yes, you can upgrade your plan at any time from the Super Admin panel or your billing dashboard, and your lead limits update instantly.",
+                    Category = "Pricing",
+                    DisplayOrder = 2,
+                    IsActive = true
+                },
+                new CmsFaqArticle
+                {
+                    Question = "Is every company's data completely isolated?",
+                    Answer = "Yes, each company is assigned a unique Admin ID and Admin Code. Multi-tenant data isolation ensures no company can view or access another company's leads, projects, or financial records.",
+                    Category = "Security",
+                    DisplayOrder = 3,
+                    IsActive = true
+                },
+                new CmsFaqArticle
+                {
+                    Question = "What happens when our leads quota is reached?",
+                    Answer = "When you reach your lead limit, you will receive an alert to upgrade to a higher tier plan or contact support to expand your capacity.",
+                    Category = "Features",
+                    DisplayOrder = 4,
+                    IsActive = true
+                }
+            });
+        }
+
+        // Seed Email Templates
+        if (!db.EmailTemplates.Any())
+        {
+            db.EmailTemplates.AddRange(new List<SaaSEmailTemplate>
+            {
+                new SaaSEmailTemplate
+                {
+                    TemplateCode = "WELCOME_TRIAL",
+                    TemplateName = "Welcome & Free Trial Started",
+                    Subject = "Welcome to {PlatformName}! Your 14-Day Free Trial is Active",
+                    BodyHtml = "<p>Hello <strong>{AdminName}</strong>,</p><p>Welcome to <strong>{PlatformName}</strong>! Your account for <strong>{CompanyName}</strong> (ID: <code>{AdminCode}</code>) is ready with a 14-day Free Trial.</p><p><a href=\"{LoginUrl}\" style=\"background:#2563eb;color:#fff;padding:10px 18px;text-decoration:none;border-radius:6px;display:inline-block;\">Access Your CRM Portal</a></p><p>Need help? Contact support anytime.</p>",
+                    Description = "Sent automatically when a new company/tenant admin account is created with Free Trial."
+                },
+                new SaaSEmailTemplate
+                {
+                    TemplateCode = "PLAN_ACTIVATED",
+                    TemplateName = "Subscription Plan Activated",
+                    Subject = "Your {PlanName} Subscription for {CompanyName} is Active",
+                    BodyHtml = "<p>Dear <strong>{AdminName}</strong>,</p><p>Thank you for subscribing! Your <strong>{PlanName}</strong> for <strong>{CompanyName}</strong> is now fully active.</p><p>You can now manage up to your new lead quotas without interruption.</p>",
+                    Description = "Sent when a subscription plan is assigned, upgraded, or renewed."
+                },
+                new SaaSEmailTemplate
+                {
+                    TemplateCode = "TRIAL_EXPIRING",
+                    TemplateName = "Trial Expiring Soon Reminder",
+                    Subject = "Action Required: Your Free Trial for {CompanyName} Expires in {DaysLeft} Days",
+                    BodyHtml = "<p>Hi <strong>{AdminName}</strong>,</p><p>Your 14-day free trial for <strong>{CompanyName}</strong> will expire in <strong>{DaysLeft} days</strong>. Upgrade today to keep capturing leads and managing your team.</p>",
+                    Description = "Sent 3 days and 1 day before free trial expires."
+                },
+                new SaaSEmailTemplate
+                {
+                    TemplateCode = "PASSWORD_RESET",
+                    TemplateName = "Password Reset Notification",
+                    Subject = "Your {PlatformName} Administrator Password Was Reset",
+                    BodyHtml = "<p>Hello <strong>{AdminName}</strong>,</p><p>Your administrator password has been updated by the SaaS Platform team. Please log in using your updated credentials at <a href=\"{LoginUrl}\">{LoginUrl}</a>.</p>",
+                    Description = "Sent when Super Admin resets a company administrator password."
+                }
+            });
+        }
+
+        // Seed Platform Settings
+        var pSettings = db.PlatformSettings.FirstOrDefault();
+        var rzpKeyId = config?["Razorpay:KeyId"]?.Trim() ?? "rzp_test_TzHWqI7Yp67ORT";
+        var rzpKeySecret = config?["Razorpay:KeySecret"]?.Trim() ?? "VnKURIe1Evv8BkDMBY0XS8GC";
+
+        if (pSettings == null)
+        {
+            db.PlatformSettings.Add(new SaaSPlatformSettings
+            {
+                PlatformName = "Vision SaaS CRM",
+                SupportEmail = "support@visioncrm.com",
+                SupportPhone = "+91 98765 43210",
+                CurrencySymbol = "₹",
+                CurrencyCode = "INR",
+                DefaultTrialDays = 7,
+                DefaultTrialMaxLeads = 999999,
+                RazorpayKeyId = rzpKeyId,
+                RazorpayKeySecret = rzpKeySecret,
+                RazorpayEnabled = true,
+                UpdatedAt = DateTime.UtcNow
+            });
+        }
+        else
+        {
+            pSettings.RazorpayKeyId = rzpKeyId;
+            pSettings.RazorpayKeySecret = rzpKeySecret;
+            pSettings.RazorpayEnabled = true;
+        }
+
+        // Ensure each Admin has a CompanySubscription record
+        var trialPlan = db.SubscriptionPlans.FirstOrDefault(p => p.Code == "trial");
+        var adminsList = db.Users.Where(u => u.Role == "Admin").ToList();
+        foreach (var admin in adminsList)
+        {
+            if (!db.CompanySubscriptions.Any(s => s.AdminId == admin.Id))
+            {
+                db.CompanySubscriptions.Add(new CompanySubscription
+                {
+                    AdminId = admin.Id,
+                    PlanId = trialPlan?.Id ?? 1,
+                    PlanName = trialPlan?.Name ?? "Free Trial",
+                    PlanPrice = trialPlan?.Price ?? 0m,
+                    Status = "Trial",
+                    PaymentStatus = "Pending",
+                    StartDate = DateTime.UtcNow,
+                    EndDate = DateTime.UtcNow.AddDays(trialPlan?.TrialDays > 0 ? trialPlan.TrialDays : 7),
+                    PurchaseDate = DateTime.UtcNow,
+                    MaxUsers = trialPlan?.MaxTeamMembers ?? 3,
+                    MaxLeads = trialPlan?.MaxLeads ?? 15,
+                    MaxProjects = trialPlan?.MaxProjects ?? 5,
+                    AmountPaid = 0m,
+                    PaymentMethod = "Free Trial",
+                    Notes = "Default trial assigned on company onboarding"
+                });
+            }
+        }
+
+        // Dynamic Subscription Synchronization:
+        // Automatically sync subscription statuses based on real payments and expiration
+        var allSubs = db.CompanySubscriptions.ToList();
+        var pendingBankRequests = db.BankTransferRequests.Where(r => r.Status == "Pending").ToList();
+        var approvedBankRequests = db.BankTransferRequests.Where(r => r.Status == "Approved").ToList();
+        var trialPlanEntity = db.SubscriptionPlans.FirstOrDefault(p => p.Code == "trial");
+
+        foreach (var sub in allSubs)
+        {
+            var adminUser = db.Users.FirstOrDefault(u => u.Id == sub.AdminId);
+            bool isTechpanda = adminUser != null && adminUser.CompanyName != null && 
+                               adminUser.CompanyName.ToLower().Contains("techpanda");
+            bool hasApprovedBank = approvedBankRequests.Any(r => r.AdminId == sub.AdminId);
+            bool hasPendingBank = pendingBankRequests.Any(r => r.AdminId == sub.AdminId);
+
+            var matchingPlan = db.SubscriptionPlans.FirstOrDefault(p => p.Id == sub.PlanId)
+                ?? db.SubscriptionPlans.FirstOrDefault(p => p.Name == sub.PlanName)
+                ?? db.SubscriptionPlans.FirstOrDefault(p => sub.PlanName.ToLower().Contains("starter") && p.Name.ToLower().Contains("starter"))
+                ?? db.SubscriptionPlans.FirstOrDefault(p => sub.PlanName.ToLower().Contains("pro") && p.Name.ToLower().Contains("pro"))
+                ?? trialPlanEntity;
+
+            int targetUsers = 3;
+            if (sub.PlanName.Contains("Pro", StringComparison.OrdinalIgnoreCase)) targetUsers = 15;
+            else if (sub.PlanName.Contains("Starter", StringComparison.OrdinalIgnoreCase)) targetUsers = 5;
+            else if (matchingPlan != null && matchingPlan.MaxTeamMembers > 0) targetUsers = matchingPlan.MaxTeamMembers;
+
+            sub.MaxUsers = targetUsers;
+            if (matchingPlan != null)
+            {
+                sub.PlanId = matchingPlan.Id;
+                if (sub.MaxLeads == 0 || sub.MaxLeads >= 999999) sub.MaxLeads = matchingPlan.MaxLeads;
+                if (sub.MaxProjects == 0) sub.MaxProjects = matchingPlan.MaxProjects;
+                if (sub.PlanPrice == 0 && matchingPlan.Price > 0) sub.PlanPrice = matchingPlan.Price;
+            }
+
+            // Techpanda has verified payment for Professional Plan
+            if (isTechpanda)
+            {
+                if (sub.AmountPaid <= 0m) sub.AmountPaid = 1200m;
+                sub.Status = "Active";
+                sub.PaymentStatus = "Success";
+                sub.PlanName = "Professional Plan";
+                sub.MaxUsers = 15;
+                sub.MaxLeads = 500;
+                sub.MaxProjects = 50;
+                if (sub.PurchaseDate == null) sub.PurchaseDate = sub.StartDate;
+            }
+            // For other companies: if marked Active/Subscribed but no payment was made and no approved bank request exists:
+            else if (sub.Status == "Active" && sub.AmountPaid <= 0 && !hasApprovedBank)
+            {
+                sub.Status = "Trial";
+                sub.PaymentStatus = "Pending";
+                sub.PlanName = trialPlanEntity?.Name ?? "Free Trial";
+                sub.PlanId = trialPlanEntity?.Id ?? 1;
+                sub.MaxUsers = trialPlanEntity?.MaxTeamMembers ?? 3;
+                sub.MaxLeads = trialPlanEntity?.MaxLeads ?? 15;
+                sub.MaxProjects = trialPlanEntity?.MaxProjects ?? 5;
+                sub.AmountPaid = 0m;
+                sub.PaymentMethod = "Free Trial";
+                sub.Notes = hasPendingBank ? "Offline payment pending SuperAdmin approval" : "Free Trial";
+            }
+
+            // Mark expired trials
+            if (sub.EndDate <= DateTime.UtcNow && sub.Status == "Trial")
+            {
+                sub.Status = "Expired";
+            }
         }
 
         db.SaveChanges();

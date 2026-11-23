@@ -98,7 +98,8 @@ public class InvoicesApiController : ControllerBase
     {
         try
         {
-            var query = _db.WorkInvoices
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var query = WorkDataScope.Invoices(_db, currentUser)
                 .Include(i => i.Project)
                 .Include(i => i.Milestone)
                 .Include(i => i.Payments)
@@ -157,7 +158,8 @@ public class InvoicesApiController : ControllerBase
     {
         try
         {
-            var inv = await _db.WorkInvoices
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var inv = await WorkDataScope.Invoices(_db, currentUser)
                 .Include(i => i.Project)
                 .Include(i => i.Milestone)
                 .Include(i => i.Payments)
@@ -182,7 +184,8 @@ public class InvoicesApiController : ControllerBase
     {
         try
         {
-            var invoices = await _db.WorkInvoices
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var invoices = await WorkDataScope.Invoices(_db, currentUser)
                 .Include(i => i.Project)
                 .Include(i => i.Milestone)
                 .Include(i => i.Payments)
@@ -206,7 +209,8 @@ public class InvoicesApiController : ControllerBase
     {
         try
         {
-            var invoice = await _db.WorkInvoices
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var invoice = await WorkDataScope.Invoices(_db, currentUser)
                 .Include(i => i.Project)
                 .Include(i => i.Milestone)
                 .Include(i => i.Payments)
@@ -307,6 +311,7 @@ public class InvoicesApiController : ControllerBase
             var invoice = new WorkInvoice
             {
                 ProjectId          = input.ProjectId,
+                AdminId            = project.AdminId ?? PermissionChecker.GetCurrentUser(_db, User)?.GetEffectiveAdminId(),
                 MilestoneId        = input.MilestoneId > 0 ? input.MilestoneId : null,
                 InvoiceNumber      = invoiceNumber,
                 ClientId           = clientId,
@@ -397,6 +402,7 @@ public class InvoicesApiController : ControllerBase
             var profile = new WorkRecurringInvoice
             {
                 ProjectId       = input.ProjectId,
+                AdminId         = project.AdminId ?? PermissionChecker.GetCurrentUser(_db, User)?.GetEffectiveAdminId(),
                 MilestoneId     = input.MilestoneId > 0 ? input.MilestoneId : null,
                 ProfileNumber   = profileNumber,
                 Title           = string.IsNullOrWhiteSpace(input.Title) ? (string.IsNullOrWhiteSpace(input.Description) ? $"Recurring Invoice for {project.ProjectName}" : input.Description.Trim()) : input.Title.Trim(),
@@ -619,7 +625,8 @@ public class InvoicesApiController : ControllerBase
     {
         try
         {
-            var query = _db.WorkInvoices
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var query = WorkDataScope.Invoices(_db, currentUser)
                 .Include(i => i.Project)
                 .Include(i => i.Milestone)
                 .Include(i => i.Payments)
@@ -675,7 +682,8 @@ public class InvoicesApiController : ControllerBase
     {
         try
         {
-            var inv = await _db.WorkInvoices
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var inv = await WorkDataScope.Invoices(_db, currentUser)
                 .Include(i => i.Project)
                 .Include(i => i.Milestone)
                 .Include(i => i.Payments)
@@ -718,13 +726,13 @@ public class InvoicesApiController : ControllerBase
 
             var pdfDto = new InvoicePdfDto
             {
-                CompanyName              = "Nimbus CRM Technologies Pvt. Ltd.",
+                CompanyName              = "Vision CRM Technologies Pvt. Ltd.",
                 CompanyAddress           = "Level 5, Tower B, Cyber City, Bangalore - 560103, Karnataka, India",
-                CompanyEmail             = "billing@nimbuscrm.com",
+                CompanyEmail             = "billing@visioncrm.com",
                 CompanyPhone             = "+91 80 4123 4567",
                 CompanyGstin             = "29AABCN1234F1Z5",
                 CompanyPan               = "AABCN1234F",
-                CompanyWebsite           = "www.nimbuscrm.com",
+                CompanyWebsite           = "www.visioncrm.com",
                 InvoiceNumber            = dto.InvoiceNumber,
                 InvoiceDate              = dto.InvoiceDate,
                 DueDate                  = dto.DueDate,
@@ -756,11 +764,11 @@ public class InvoicesApiController : ControllerBase
                 RemainingAmount          = dto.RemainingAmount,
                 PaymentStatus            = dto.PaymentStatus,
                 BankName                 = "HDFC Bank Ltd.",
-                BankAccountName          = "Nimbus CRM Technologies Pvt. Ltd.",
+                BankAccountName          = "Vision CRM Technologies Pvt. Ltd.",
                 BankAccountNumber        = "50200012345678",
                 BankIfsc                 = "HDFC0000123",
                 BankBranch               = "Koramangala, Bangalore - 560034",
-                UpiId                    = "nimbuscrm@hdfcbank",
+                UpiId                    = "visioncrm@hdfcbank",
                 PaymentHistory           = dto.Payments,
                 Notes                    = dto.Notes
             };

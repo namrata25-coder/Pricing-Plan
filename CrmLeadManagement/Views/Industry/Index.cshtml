@@ -1,0 +1,112 @@
+@model IndustryPageViewModel
+@{
+    ViewData["Title"] = "Industry Management";
+    ViewData["ActivePage"] = "PortfolioIndustry";
+    var canCreate = ViewData["CanCreateIndustry"] is true;
+}
+
+<div style="max-width:1200px;margin:0 auto;padding:1.5rem 1.75rem;">
+    <div style="margin-bottom:1.5rem;">
+        <div style="font-size:12px;font-weight:600;color:var(--ink-500);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Portfolio Management</div>
+        <h1 style="font-size:1.6rem;font-weight:800;color:var(--ink-900);margin:0;">
+            <i class="bi bi-grid-3x3-gap" style="color:var(--brand-600);margin-right:8px;"></i>Industry Management
+        </h1>
+    </div>
+
+    @if (TempData["SuccessMessage"] is string successMessage)
+    {
+        <div class="alert alert-success" role="status">@successMessage</div>
+    }
+    @if (TempData["ErrorMessage"] is string errorMessage)
+    {
+        <div class="alert alert-danger" role="alert">@errorMessage</div>
+    }
+
+    @if (canCreate)
+    {
+        <section style="background:#fff;border:1px solid var(--line);border-radius:12px;padding:1.5rem;margin-bottom:1.5rem;box-shadow:0 1px 3px rgba(0,0,0,.03);">
+            <h2 style="font-size:1.1rem;font-weight:700;color:var(--ink-800);margin:0 0 1.25rem;">Add Industry Demo</h2>
+            <form asp-action="Create" method="post" novalidate>
+                @Html.AntiForgeryToken()
+                <div asp-validation-summary="ModelOnly" style="color:#dc2626;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 12px;margin-bottom:1rem;"></div>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem;align-items:end;">
+                    <div>
+                        <label asp-for="Input.Category" style="display:block;font-size:13px;font-weight:600;margin-bottom:6px;">Category <span style="color:#ef4444;">*</span></label>
+                        <select asp-for="Input.Category" required style="width:100%;padding:10px 12px;border:1.5px solid var(--line);border-radius:9px;font-size:14px;background:#fff;">
+                            <option value="">Select category</option>
+                            @foreach (var category in Model.Categories)
+                            {
+                                <option value="@category">@category</option>
+                            }
+                        </select>
+                        <span asp-validation-for="Input.Category" style="color:#ef4444;font-size:12px;"></span>
+                    </div>
+                    <div>
+                        <label asp-for="Input.DemoLink" style="display:block;font-size:13px;font-weight:600;margin-bottom:6px;">Demo Link <span style="color:#ef4444;">*</span></label>
+                        <input asp-for="Input.DemoLink" maxlength="2048" placeholder="https://example.com/demo"
+                               style="width:100%;padding:10px 12px;border:1.5px solid var(--line);border-radius:9px;font-size:14px;" />
+                        <span asp-validation-for="Input.DemoLink" style="color:#ef4444;font-size:12px;"></span>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary" style="display:inline-flex;align-items:center;gap:7px;margin-top:1rem;font-weight:600;">
+                    <i class="bi bi-plus-lg"></i> Save Demo Link
+                </button>
+            </form>
+        </section>
+    }
+
+    <section style="background:#fff;border:1px solid var(--line);border-radius:12px;padding:1.25rem 1.5rem;margin-bottom:1.5rem;box-shadow:0 1px 3px rgba(0,0,0,.03);">
+        <form asp-controller="Industry" asp-action="Index" method="get" style="display:flex;align-items:end;gap:12px;flex-wrap:wrap;">
+            <div style="flex:1;min-width:240px;">
+                <label for="category" style="display:block;font-size:13px;font-weight:600;margin-bottom:6px;">Select category to view demos</label>
+                <select id="category" name="category" style="width:100%;padding:10px 12px;border:1.5px solid var(--line);border-radius:9px;font-size:14px;background:#fff;">
+                    <option value="">Select category</option>
+                    @foreach (var category in Model.Categories)
+                    {
+                        <option value="@category" selected="@(string.Equals(Model.SelectedCategory, category, StringComparison.OrdinalIgnoreCase) ? "selected" : null)">@category</option>
+                    }
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary" style="display:inline-flex;align-items:center;gap:7px;font-weight:600;">
+                <i class="bi bi-search"></i> Show demo links
+            </button>
+        </form>
+    </section>
+
+    @if (Model.SelectedCategory == null)
+    {
+        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:1rem 1.25rem;color:#1e40af;">
+            Select a category above to view all demo links saved for it.
+        </div>
+    }
+    else if (Model.DemoLinks.Count == 0)
+    {
+        <div style="background:#fff;border:1px solid var(--line);border-radius:12px;padding:1.5rem;color:var(--ink-500);">
+            No demo links have been added for <strong>@Model.SelectedCategory</strong> yet.
+        </div>
+    }
+    else
+    {
+        <section style="background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.03);">
+            <div style="padding:1rem 1.25rem;border-bottom:1px solid var(--line);font-size:14px;font-weight:700;color:var(--ink-700);">
+                @Model.SelectedCategory demos (@Model.DemoLinks.Count)
+            </div>
+            <div style="padding:1rem 1.25rem;display:grid;gap:.75rem;">
+                @foreach (var demo in Model.DemoLinks)
+                {
+                    var isSafeDemoLink = Uri.TryCreate(demo.DemoLink, UriKind.Absolute, out var demoUri)
+                        && (demoUri.Scheme == Uri.UriSchemeHttp || demoUri.Scheme == Uri.UriSchemeHttps);
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:.85rem 1rem;border:1px solid var(--line);border-radius:9px;overflow-wrap:anywhere;">
+                        <span style="font-size:13px;color:var(--ink-700);">@demo.DemoLink</span>
+                        @if (isSafeDemoLink)
+                        {
+                            <a href="@demo.DemoLink" target="_blank" rel="noopener noreferrer" class="btn btn-outline" style="white-space:nowrap;">
+                                <i class="bi bi-box-arrow-up-right"></i> Open demo
+                            </a>
+                        }
+                    </div>
+                }
+            </div>
+        </section>
+    }
+</div>

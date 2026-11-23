@@ -85,9 +85,11 @@ public class AuthController : Controller
             ?? demoUsers.FirstOrDefault(u => string.Equals(u.Status, "Active", StringComparison.OrdinalIgnoreCase));
 
         ViewBag.DemoUsers = demoUsers;
-        ViewBag.AdminEmail = _configuration["Seed:AdminEmail"]?.Trim() ?? "admin@nimbuscrm.com";
+        ViewBag.SuperAdminEmail = _configuration["Seed:SuperAdminEmail"]?.Trim() ?? "superadmin@visioncrm.com";
+        ViewBag.SuperAdminPassword = _configuration["Seed:SuperAdminPassword"]?.Trim() ?? "SuperAdmin123!";
+        ViewBag.AdminEmail = _configuration["Seed:AdminEmail"]?.Trim() ?? "admin@visioncrm.com";
         ViewBag.AdminPassword = _configuration["Seed:AdminPassword"]?.Trim() ?? "AdminPassword123!";
-        ViewBag.UserEmail = defaultUser?.Email ?? "ananya.sharma@nimbuscrm.com";
+        ViewBag.UserEmail = defaultUser?.Email ?? "ananya.sharma@visioncrm.com";
         var firstWord = (defaultUser?.Name ?? "Ananya").Split(' ')[0];
         ViewBag.UserPassword = $"{firstWord}@123!";
         ViewBag.IsDemoEnabled = _environment.IsDevelopment() || _configuration.GetValue<bool>("Demo:Enabled", true);
@@ -128,11 +130,15 @@ public class AuthController : Controller
         int.TryParse(input, out var numericId);
         var inputLower = input.ToLower();
 
-        var adminEmail = _configuration["Seed:AdminEmail"]?.Trim() ?? "admin@nimbuscrm.com";
+        var adminEmail = _configuration["Seed:AdminEmail"]?.Trim() ?? "admin@visioncrm.com";
         var defaultPassword = _configuration["Seed:AdminPassword"]?.Trim() ?? "AdminPassword123!";
 
+        var altInputLower = inputLower.Contains("@visioncrm.com") 
+            ? inputLower.Replace("@visioncrm.com", "@nimbuscrm.com") 
+            : (inputLower.Contains("@nimbuscrm.com") ? inputLower.Replace("@nimbuscrm.com", "@visioncrm.com") : inputLower);
+
         var user = await _db.Users.FirstOrDefaultAsync(u =>
-            (u.Email != null && u.Email.ToLower() == inputLower) ||
+            (u.Email != null && (u.Email.ToLower() == inputLower || u.Email.ToLower() == altInputLower)) ||
             (u.Name != null && u.Name.ToLower() == inputLower) ||
             (numericId > 0 && u.Id == numericId));
 
@@ -140,10 +146,11 @@ public class AuthController : Controller
         bool isAdminAccount = user != null &&
             (string.Equals(user.Role, "Admin", StringComparison.OrdinalIgnoreCase) ||
              string.Equals(user.Role, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
-             string.Equals(user.Email, adminEmail, StringComparison.OrdinalIgnoreCase));
+             string.Equals(user.Email, adminEmail, StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(user.Email, "admin@nimbuscrm.com", StringComparison.OrdinalIgnoreCase));
 
         // Auto-seed Administrator account if missing when configured admin credentials are used
-        if (user == null && string.Equals(input, adminEmail, StringComparison.OrdinalIgnoreCase) && password == defaultPassword)
+        if (user == null && (string.Equals(input, adminEmail, StringComparison.OrdinalIgnoreCase) || string.Equals(input, "admin@nimbuscrm.com", StringComparison.OrdinalIgnoreCase)) && password == defaultPassword)
         {
             user = new UserRoleEntry
             {
@@ -280,6 +287,24 @@ public class AuthController : Controller
             return View(model);
         }
 
+        // For team members under an Admin: check if parent Admin is active
+        if (user.AdminId.HasValue && user.AdminId.Value > 0 &&
+            !string.Equals(user.Role, "Admin", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(user.Role, "Super Admin", StringComparison.OrdinalIgnoreCase))
+        {
+            var parentAdmin = await _db.Users.FirstOrDefaultAsync(u => u.Id == user.AdminId.Value);
+            if (parentAdmin != null && !string.Equals(parentAdmin.Status, "Active", StringComparison.OrdinalIgnoreCase))
+            {
+                var msg = "Your organization's administrator account is currently inactive. Please contact your administrator or support.";
+                if (isAjax)
+                {
+                    return StatusCode(StatusCodes.Status403Forbidden, new { success = false, message = msg });
+                }
+                model.ErrorMessage = msg;
+                return View(model);
+            }
+        }
+
         // Login success: reset lockout and update LastLoginAt
         user.FailedLoginCount = 0;
         user.LockoutUntil = null;
@@ -296,7 +321,10 @@ public class AuthController : Controller
             new(ClaimTypes.Name, user.Name ?? "User"),
             new(ClaimTypes.Email, user.Email ?? ""),
             new(ClaimTypes.Role, user.Role ?? "Sales Executive"),
-            new("token_id", plainToken)
+            new("token_id", plainToken),
+            new("admin_id", (user.GetEffectiveAdminId()?.ToString() ?? "0")),
+            new("admin_code", user.AdminCode ?? ""),
+            new("company_name", user.CompanyName ?? "")
         };
 
         var claimsIdentity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
@@ -663,9 +691,14 @@ public class AuthController : Controller
 
         var role = (user.Role ?? "").Trim();
 
-        // Admin & Super Admin -> Main Leads Overview / Workspace
-        if (string.Equals(role, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase))
+        // Super Admin -> SaaS Dashboard
+        if (string.Equals(role, "Super Admin", StringComparison.OrdinalIgnoreCase))
+        {
+            return "/SuperAdmin/Dashboard";
+        }
+
+        // Admin -> Main Leads Overview / Workspace
+        if (string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase))
         {
             return "/Lead/List";
         }

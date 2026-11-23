@@ -53,7 +53,8 @@ public class MilestonesApiController : ControllerBase
     {
         try
         {
-            var query = _db.WorkMilestones
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var query = WorkDataScope.Milestones(_db, currentUser)
                 .Include(m => m.Project)
                 .Include(m => m.Tasks)
                 .AsQueryable();
@@ -75,8 +76,20 @@ public class MilestonesApiController : ControllerBase
             }
 
             var milestones = await query.OrderBy(m => m.Id).ToListAsync();
+            if (!WorkDataScope.HasFullAccess(currentUser))
+            {
+                foreach (var milestone in milestones)
+                {
+                    milestone.AssignedMembers = WorkDataScope.IsAssignedToSelf(milestone.AssignedMembers, currentUser)
+                        ? currentUser?.Name
+                        : "";
+                    milestone.Tasks = milestone.Tasks
+                        .Where(task => WorkDataScope.IsSelf(task.AssignedMember, currentUser))
+                        .ToList();
+                }
+            }
             var milestoneIds = milestones.Select(m => m.Id).ToList();
-            var milestoneInvoices = await _db.WorkInvoices
+            var milestoneInvoices = await WorkDataScope.Invoices(_db, currentUser)
                 .Include(i => i.Payments)
                 .Where(i => i.MilestoneId.HasValue && milestoneIds.Contains(i.MilestoneId.Value))
                 .ToListAsync();
@@ -109,7 +122,9 @@ public class MilestonesApiController : ControllerBase
                     EffectiveCompletedAmount = m.EffectiveCompletedAmount,
                     PendingAmount = m.PendingAmount,
                     ProgressPercent = m.ProgressPercent,
-                    AssignedMembers = m.AssignedMembers ?? "",
+                    AssignedMembers = WorkDataScope.HasFullAccess(currentUser)
+                        ? m.AssignedMembers ?? ""
+                        : WorkDataScope.IsAssignedToSelf(m.AssignedMembers, currentUser) ? currentUser?.Name ?? "" : "",
                     Priority = m.Priority ?? "Medium",
                     Status = m.Status ?? "Pending",
                     Notes = m.Notes ?? "",
@@ -153,6 +168,13 @@ public class MilestonesApiController : ControllerBase
     {
         try
         {
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            if (!WorkDataScope.HasFullAccess(currentUser) &&
+                !await WorkDataScope.Milestones(_db, currentUser).AnyAsync(m => m.ProjectId == projectId))
+            {
+                return NotFound(new { message = $"Project with ID {projectId} not found." });
+            }
+
             var project = await _db.WorkProjects
                 .Include(p => p.Milestones)
                 .Include(p => p.Invoices)
@@ -162,8 +184,16 @@ public class MilestonesApiController : ControllerBase
             if (project == null)
                 return NotFound(new { message = $"Project with ID {projectId} not found." });
 
-            var milestones = project.Milestones.OrderBy(m => m.Id).ToList();
-            var invoices = project.Invoices.ToList();
+            var visibleMilestoneIds = await WorkDataScope.Milestones(_db, currentUser)
+                .Where(m => m.ProjectId == projectId)
+                .Select(m => m.Id)
+                .ToListAsync();
+            var visibleInvoiceIds = await WorkDataScope.Invoices(_db, currentUser)
+                .Where(i => i.ProjectId == projectId)
+                .Select(i => i.Id)
+                .ToListAsync();
+            var milestones = project.Milestones.Where(m => visibleMilestoneIds.Contains(m.Id)).OrderBy(m => m.Id).ToList();
+            var invoices = project.Invoices.Where(i => visibleInvoiceIds.Contains(i.Id)).ToList();
 
             var evaluatedMilestones = milestones.Select(m =>
             {
@@ -215,8 +245,12 @@ public class MilestonesApiController : ControllerBase
                     project.Deadline,
                     project.Priority,
                     project.Status,
-                    project.ProjectManager,
-                    project.AssignedMembers,
+                    ProjectManager = WorkDataScope.HasFullAccess(currentUser) || WorkDataScope.IsSelf(project.ProjectManager, currentUser)
+                        ? project.ProjectManager
+                        : "",
+                    AssignedMembers = WorkDataScope.HasFullAccess(currentUser) || WorkDataScope.IsAssignedToSelf(project.AssignedMembers, currentUser)
+                        ? WorkDataScope.HasFullAccess(currentUser) ? project.AssignedMembers : currentUser?.Name
+                        : "",
                     project.Description,
                     TotalMilestones = milestones.Count,
                     CompletedMilestones = milestones.Count(m => m.Status == "Completed")
@@ -238,20 +272,28 @@ public class MilestonesApiController : ControllerBase
     {
         try
         {
-            var m = await _db.WorkMilestones
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var m = await WorkDataScope.Milestones(_db, currentUser)
                 .Include(x => x.Project)
                 .Include(x => x.Tasks)
                 .FirstOrDefaultAsync(x => x.Id == id);
 
             if (m is null)
                 return NotFound(new { message = $"Milestone with ID {id} not found." });
+            if (!WorkDataScope.HasFullAccess(currentUser))
+            {
+                m.AssignedMembers = WorkDataScope.IsAssignedToSelf(m.AssignedMembers, currentUser)
+                    ? currentUser?.Name
+                    : "";
+                m.Tasks = m.Tasks.Where(task => WorkDataScope.IsSelf(task.AssignedMember, currentUser)).ToList();
+            }
 
-            var projectMilestones = await _db.WorkMilestones
+            var projectMilestones = await WorkDataScope.Milestones(_db, currentUser)
                 .Where(x => x.ProjectId == m.ProjectId)
                 .OrderBy(x => x.Id)
                 .ToListAsync();
 
-            var projectInvoices = await _db.WorkInvoices
+            var projectInvoices = await WorkDataScope.Invoices(_db, currentUser)
                 .Include(i => i.Payments)
                 .Where(i => i.ProjectId == m.ProjectId)
                 .ToListAsync();
@@ -278,7 +320,9 @@ public class MilestonesApiController : ControllerBase
                 EffectiveCompletedAmount = m.EffectiveCompletedAmount,
                 PendingAmount = m.PendingAmount,
                 ProgressPercent = m.ProgressPercent,
-                AssignedMembers = m.AssignedMembers ?? "",
+                AssignedMembers = WorkDataScope.HasFullAccess(currentUser)
+                    ? m.AssignedMembers ?? ""
+                    : WorkDataScope.IsAssignedToSelf(m.AssignedMembers, currentUser) ? currentUser?.Name ?? "" : "",
                 Priority = m.Priority ?? "Medium",
                 Status = m.Status ?? "Pending",
                 Notes = m.Notes ?? "",

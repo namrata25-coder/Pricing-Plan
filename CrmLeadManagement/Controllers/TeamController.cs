@@ -12,11 +12,13 @@ public class TeamController : Controller
 {
     private readonly AppDbContext _db;
     private readonly IConfiguration? _configuration;
+    private readonly CrmLeadManagement.Services.ISubscriptionLimitService _limitService;
 
-    public TeamController(AppDbContext db, IConfiguration? configuration = null)
+    public TeamController(AppDbContext db, IConfiguration? configuration = null, CrmLeadManagement.Services.ISubscriptionLimitService? limitService = null)
     {
         _db = db;
         _configuration = configuration;
+        _limitService = limitService ?? new CrmLeadManagement.Services.SubscriptionLimitService(db);
     }
 
     // GET /Team or /Team/Index - Team Members overview
@@ -29,7 +31,8 @@ public class TeamController : Controller
 
         var authEmail = User.FindFirst(ClaimTypes.Email)?.Value;
         var currentUser = _db.Users.FirstOrDefault(u => u.Email == authEmail);
-        bool isAdmin = User.IsInRole("Admin") || (currentUser != null && string.Equals(currentUser.Role, "Admin", StringComparison.OrdinalIgnoreCase));
+        bool isSuperAdmin = PermissionChecker.IsSuperAdmin(User, currentUser);
+        bool isAdmin = User.IsInRole("Admin") || (currentUser != null && string.Equals(currentUser.Role, "Admin", StringComparison.OrdinalIgnoreCase)) || isSuperAdmin;
         if (!isAdmin && !PermissionChecker.HasModulePermission(_db, currentUser, "Member", "View"))
         {
             TempData["ErrorMessage"] = "Access Denied: You do not have permission to view Team Members.";
@@ -37,6 +40,16 @@ public class TeamController : Controller
         }
 
         var query = _db.Users.AsQueryable();
+        var effectiveAdminId = currentUser?.GetEffectiveAdminId();
+
+        // Multi-tenant SaaS isolation: Tenant Admins only see their own organization members
+        if (!isSuperAdmin)
+        {
+            if (effectiveAdminId.HasValue)
+            {
+                query = query.Where(u => u.AdminId == effectiveAdminId.Value || u.Id == currentUser!.Id);
+            }
+        }
 
         if (!string.IsNullOrWhiteSpace(search))
         {
@@ -57,23 +70,56 @@ public class TeamController : Controller
         }
 
         var users = query.OrderBy(u => u.Name).ToList();
-        var allRoles = _db.RoleMasters.OrderBy(r => r.RoleName).Select(r => r.RoleName).ToList();
+        var userIds = users.Select(user => user.Id).ToList();
+        var employeeBasicSalaries = _db.EmployeeSalaries
+            .AsNoTracking()
+            .Where(salary => userIds.Contains(salary.EmployeeId))
+            .OrderByDescending(salary => salary.EffectiveFrom)
+            .ThenByDescending(salary => salary.Id)
+            .Select(salary => new { salary.EmployeeId, salary.BasicSalary })
+            .ToList()
+            .GroupBy(salary => salary.EmployeeId)
+            .ToDictionary(group => group.Key, group => group.First().BasicSalary);
+        var allRoles = isSuperAdmin
+            ? _db.RoleMasters.OrderBy(r => r.RoleName).Select(r => r.RoleName).ToList()
+            : _db.RoleMasters.Where(r => r.RoleName != "Admin" && r.RoleName != "Super Admin").OrderBy(r => r.RoleName).Select(r => r.RoleName).ToList();
 
         ViewBag.Search = search;
         ViewBag.Role = role;
         ViewBag.Status = status;
         ViewBag.AllRoles = allRoles;
+        ViewBag.EmployeeBasicSalaries = employeeBasicSalaries;
+
+        if (effectiveAdminId.HasValue && effectiveAdminId.Value > 0)
+        {
+            var usage = _limitService.GetUsageAsync(effectiveAdminId.Value).GetAwaiter().GetResult();
+            ViewBag.CurrentUsers = usage.UsersUsed;
+            ViewBag.MaxUsers = usage.MaxUsers;
+            ViewBag.UserLimitReached = usage.HasReachedUserLimit;
+            ViewBag.UsageSummary = usage;
+        }
 
         return View(users);
     }
 
     // POST /Team/SaveMember - Add or Update a team member
     [HttpPost]
-    public async Task<IActionResult> SaveMember(int id, string name, string email, string role, string status, string? password = null)
+    public async Task<IActionResult> SaveMember(
+        int id,
+        string name,
+        string email,
+        string role,
+        string status,
+        string? password = null,
+        string? employmentType = null,
+        decimal? salesTargetValue = null,
+        decimal? belowTargetCommissionPercent = null,
+        decimal? atOrAboveTargetCommissionPercent = null)
     {
         var authEmail = User.FindFirst(ClaimTypes.Email)?.Value;
         var currentUser = await _db.Users.FirstOrDefaultAsync(u => u.Email == authEmail);
-        bool isAdmin = User.IsInRole("Admin") || (currentUser != null && string.Equals(currentUser.Role, "Admin", StringComparison.OrdinalIgnoreCase));
+        bool isSuperAdmin = PermissionChecker.IsSuperAdmin(User, currentUser);
+        bool isAdmin = User.IsInRole("Admin") || (currentUser != null && string.Equals(currentUser.Role, "Admin", StringComparison.OrdinalIgnoreCase)) || isSuperAdmin;
         var requiredAction = id == 0 ? "Create" : "Edit";
 
         if (!isAdmin && !PermissionChecker.HasModulePermission(_db, currentUser, "Member", requiredAction))
@@ -82,9 +128,10 @@ public class TeamController : Controller
             return RedirectToAction(nameof(Index));
         }
 
-        if (!isAdmin && string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase))
+        // Only Super Admin can assign the Admin or Super Admin role
+        if (!isSuperAdmin && (string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase) || string.Equals(role, "Super Admin", StringComparison.OrdinalIgnoreCase)))
         {
-            TempData["ErrorMessage"] = "Access Denied: Only administrators can assign the Admin role.";
+            TempData["ErrorMessage"] = "Access Denied: Only Super Admin can assign administrative privileges.";
             return RedirectToAction(nameof(Index));
         }
 
@@ -131,10 +178,46 @@ public class TeamController : Controller
 
         var permsList = roleMaster != null ? roleMaster.GetPermissions() : RoleStore.GetDefaultMatrixTemplate();
         var modulePermsString = string.Join(",", permsList.Where(p => p.View).Select(p => p.Module));
+        var assignedRole = roleMaster != null ? roleMaster.RoleName : role;
+        if (!ModelState.IsValid)
+        {
+            TempData["ErrorMessage"] = "Enter valid numbers for target values and commission rates.";
+            return RedirectToAction(nameof(Index));
+        }
+
+        var employmentError = ValidateEmploymentDetails(
+            assignedRole,
+            employmentType,
+            salesTargetValue,
+            belowTargetCommissionPercent,
+            atOrAboveTargetCommissionPercent);
+        if (employmentError != null)
+        {
+            TempData["ErrorMessage"] = employmentError;
+            return RedirectToAction(nameof(Index));
+        }
+
+        var isSalesExecutive = string.Equals(assignedRole, "Sales Executive", StringComparison.OrdinalIgnoreCase);
+        var isFreelancer = isSalesExecutive && string.Equals(employmentType, "Freelancer", StringComparison.OrdinalIgnoreCase);
+        var savedEmploymentType = isSalesExecutive ? employmentType : null;
+        var savedSalesTargetValue = isFreelancer ? salesTargetValue : null;
+        var savedBelowTargetCommissionPercent = isFreelancer ? belowTargetCommissionPercent : null;
+        var savedAtOrAboveTargetCommissionPercent = isFreelancer ? atOrAboveTargetCommissionPercent : null;
         var hasher = new Microsoft.AspNetCore.Identity.PasswordHasher<UserRoleEntry>();
 
         if (id == 0)
         {
+            var effectiveAdminId = currentUser?.GetEffectiveAdminId();
+            if (effectiveAdminId.HasValue && effectiveAdminId.Value > 0)
+            {
+                var (allowed, reason, cur, max) = await _limitService.CanAddUserAsync(effectiveAdminId.Value);
+                if (!allowed)
+                {
+                    TempData["ErrorMessage"] = reason;
+                    return RedirectToAction(nameof(Index));
+                }
+            }
+
             if (string.IsNullOrWhiteSpace(password) || password.Trim().Length < 6)
             {
                 TempData["ErrorMessage"] = "Password must be at least 6 characters for a new team member.";
@@ -145,12 +228,19 @@ public class TeamController : Controller
             {
                 Name = name,
                 Email = email,
-                Role = roleMaster != null ? roleMaster.RoleName : role,
+                Role = assignedRole,
                 Status = status,
                 ModulePermissions = modulePermsString,
+                EmploymentType = savedEmploymentType,
+                SalesTargetValue = savedSalesTargetValue,
+                BelowTargetCommissionPercent = savedBelowTargetCommissionPercent,
+                AtOrAboveTargetCommissionPercent = savedAtOrAboveTargetCommissionPercent,
                 CreatedAt = DateTime.UtcNow,
                 FailedLoginCount = 0,
-                MustChangePassword = false
+                MustChangePassword = false,
+                AdminId = effectiveAdminId,
+                AdminCode = currentUser?.AdminCode,
+                CompanyName = currentUser?.CompanyName
             };
             newUser.PasswordHash = hasher.HashPassword(newUser, password.Trim());
 
@@ -168,11 +258,26 @@ public class TeamController : Controller
                 return RedirectToAction(nameof(Index));
             }
 
+            var effectiveAdminId = currentUser?.GetEffectiveAdminId();
+            if (!isSuperAdmin && user.AdminId != effectiveAdminId && user.Id != currentUser?.Id)
+            {
+                TempData["ErrorMessage"] = "Access Denied: You cannot modify members from other organizations.";
+                return RedirectToAction(nameof(Index));
+            }
+
             user.Name = name;
             user.Email = email;
-            user.Role = roleMaster != null ? roleMaster.RoleName : role;
+            user.Role = assignedRole;
             user.Status = status;
             user.ModulePermissions = modulePermsString;
+            user.EmploymentType = savedEmploymentType;
+            user.SalesTargetValue = savedSalesTargetValue;
+            user.MinimumTargetValue = isFreelancer
+                ? await GetEmployeeBasicSalaryAsync(user, currentUser?.GetEffectiveAdminId())
+                : null;
+            user.AchievedTargetValue = null;
+            user.BelowTargetCommissionPercent = savedBelowTargetCommissionPercent;
+            user.AtOrAboveTargetCommissionPercent = savedAtOrAboveTargetCommissionPercent;
 
             if (!string.IsNullOrWhiteSpace(password) && password.Trim().Length >= 6)
             {
@@ -186,6 +291,50 @@ public class TeamController : Controller
         }
 
         return RedirectToAction(nameof(Index));
+    }
+
+    private static string? ValidateEmploymentDetails(
+        string role,
+        string? employmentType,
+        decimal? salesTargetValue,
+        decimal? belowTargetCommissionPercent,
+        decimal? atOrAboveTargetCommissionPercent)
+    {
+        if (!string.Equals(role, "Sales Executive", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        if (!string.Equals(employmentType, "Permanent", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(employmentType, "Freelancer", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Select Permanent or Freelancer for a Sales Executive.";
+        }
+
+        if (!string.Equals(employmentType, "Freelancer", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        if (salesTargetValue < 0)
+            return "Target values cannot be negative.";
+
+        if (belowTargetCommissionPercent < 0 || belowTargetCommissionPercent > 100 ||
+            atOrAboveTargetCommissionPercent < 0 || atOrAboveTargetCommissionPercent > 100)
+        {
+            return "Commission rates must be between 0 and 100 percent.";
+        }
+
+        return null;
+    }
+
+    private Task<decimal?> GetEmployeeBasicSalaryAsync(UserRoleEntry employee, int? fallbackAdminId)
+    {
+        var adminId = employee.AdminId ?? fallbackAdminId;
+        if (!adminId.HasValue)
+            return Task.FromResult<decimal?>(null);
+
+        return _db.EmployeeSalaries
+            .AsNoTracking()
+            .Where(salary => salary.AdminId == adminId.Value && salary.EmployeeId == employee.Id)
+            .Select(salary => (decimal?)salary.BasicSalary)
+            .FirstOrDefaultAsync();
     }
 
     // POST /Team/DeleteMember - Remove a team member
@@ -205,6 +354,21 @@ public class TeamController : Controller
         if (user == null)
         {
             TempData["ErrorMessage"] = "Team member not found.";
+            return RedirectToAction(nameof(Index));
+        }
+
+        bool isSuperAdmin = PermissionChecker.IsSuperAdmin(User, currentUser);
+        var effectiveAdminId = currentUser?.GetEffectiveAdminId();
+
+        if (!isSuperAdmin && user.AdminId != effectiveAdminId)
+        {
+            TempData["ErrorMessage"] = "Access Denied: You cannot delete members of another organization.";
+            return RedirectToAction(nameof(Index));
+        }
+
+        if (!isSuperAdmin && (user.Role == "Super Admin" || user.Role == "Admin"))
+        {
+            TempData["ErrorMessage"] = "Access Denied: Tenant administrators cannot delete administrator accounts. Only Super Admin can manage Admins.";
             return RedirectToAction(nameof(Index));
         }
 

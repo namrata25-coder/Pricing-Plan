@@ -48,10 +48,43 @@ var configConn = builder.Configuration.GetConnectionString("DefaultConnection")
               ?? Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection")
               ?? Environment.GetEnvironmentVariable("ConnectionStrings:DefaultConnection");
 
-if (!string.IsNullOrWhiteSpace(configConn) && !configConn.Contains("trusted_connection", StringComparison.OrdinalIgnoreCase))
+bool isSqlServer = !string.IsNullOrWhiteSpace(configConn) && (
+    configConn.Contains("trusted_connection", StringComparison.OrdinalIgnoreCase) ||
+    configConn.Contains("pricingdb", StringComparison.OrdinalIgnoreCase) ||
+    configConn.Contains("MSSQLLocalDB", StringComparison.OrdinalIgnoreCase) ||
+    configConn.Contains("Initial Catalog", StringComparison.OrdinalIgnoreCase) ||
+    configConn.Contains("Data Source", StringComparison.OrdinalIgnoreCase) ||
+    configConn.Contains("Integrated Security", StringComparison.OrdinalIgnoreCase)
+);
+
+if (isSqlServer)
 {
-    connectionString = ConnectionStringHelper.FromUrl(configConn);
-    connectionSource = "Configuration 'ConnectionStrings:DefaultConnection'";
+    connectionString = configConn;
+    connectionSource = "Microsoft SQL Server ('pricingdb')";
+}
+else if (!string.IsNullOrWhiteSpace(configConn))
+{
+    try
+    {
+        var parsed = ConnectionStringHelper.FromUrl(configConn);
+        if (!string.IsNullOrWhiteSpace(parsed))
+        {
+            connectionString = parsed;
+            connectionSource = "Configuration 'ConnectionStrings:DefaultConnection'";
+            if (builder.Environment.IsDevelopment())
+            {
+                var before = connectionString;
+                connectionString = ConnectionStringHelper.PreferIpv4(connectionString);
+                if (!string.Equals(before, connectionString, StringComparison.Ordinal))
+                    connectionSource += " (IPv4)";
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[WARNING] Could not parse connection string '{configConn}': {ex.Message}. Falling back to default.");
+        connectionString = null;
+    }
 }
 else
 {
@@ -63,6 +96,13 @@ else
     {
         connectionString = ConnectionStringHelper.FromUrl(databaseUrl);
         connectionSource = "Environment variable 'DATABASE_URL'";
+        if (builder.Environment.IsDevelopment())
+        {
+            var before = connectionString;
+            connectionString = ConnectionStringHelper.PreferIpv4(connectionString);
+            if (!string.Equals(before, connectionString, StringComparison.Ordinal))
+                connectionSource += " (IPv4)";
+        }
     }
 }
 
@@ -91,7 +131,7 @@ if (string.IsNullOrWhiteSpace(connectionString))
 }
 
 // Check for Render internal hostname used outside Render's private network
-if (builder.Environment.IsDevelopment())
+if (builder.Environment.IsDevelopment() && !isSqlServer)
 {
     try
     {
@@ -109,8 +149,29 @@ if (builder.Environment.IsDevelopment())
 
 builder.Services.AddDbContext<AppDbContext>(options =>
 {
-    options.UseNpgsql(connectionString);
-    options.ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning));
+    if (isSqlServer)
+    {
+        options.UseSqlServer(connectionString, sql =>
+        {
+            sql.EnableRetryOnFailure(5, TimeSpan.FromSeconds(8), null);
+            sql.CommandTimeout(60);
+            sql.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery);
+        });
+    }
+    else
+    {
+        options.UseNpgsql(connectionString, npgsql =>
+        {
+            npgsql.EnableRetryOnFailure(5, TimeSpan.FromSeconds(8), null);
+            npgsql.CommandTimeout(60);
+            npgsql.UseQuerySplittingBehavior(QuerySplittingBehavior.SplitQuery);
+        });
+    }
+    options.ConfigureWarnings(w =>
+    {
+        w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning);
+        w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.MultipleCollectionIncludeWarning);
+    });
 });
 
 // Lets the static LeadStore/SettingsStore classes reach the current request's
@@ -120,6 +181,10 @@ builder.Services.AddHttpContextAccessor();
 // Authentication: Cookie scheme for browser sessions + Bearer scheme for API/mobile
 builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<IAuditLogService, AuditLogService>();
+builder.Services.AddHttpClient();
+builder.Services.AddScoped<ISaaSEmailService, SaaSEmailService>();
+builder.Services.AddScoped<ISaaSPaymentService, SaaSPaymentService>();
+builder.Services.AddScoped<ISubscriptionLimitService, SubscriptionLimitService>();
 builder.Services.AddAuthentication(options =>
     {
         options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
@@ -134,7 +199,7 @@ builder.Services.AddAuthentication(options =>
         options.AccessDeniedPath = "/login";
         options.ExpireTimeSpan = TimeSpan.FromHours(12);
         options.SlidingExpiration = true;
-        options.Cookie.Name = "NimbusCRM.Auth";
+        options.Cookie.Name = "VisionCRM.Auth";
         options.Cookie.HttpOnly = true;
         options.Cookie.SameSite = SameSiteMode.Lax;
         options.Events.OnRedirectToLogin = context =>
@@ -307,31 +372,231 @@ using (var scope = app.Services.CreateScope())
         startupLogger.LogInformation("Database configuration: {SafeDescription}",
             ConnectionStringHelper.GetSafeConnectionDescription(connectionString));
 
-        // If the database already contains tables (e.g. from schema.sql or an earlier migration name),
-        // baseline __EFMigrationsHistory with the current initial migration so Migrate() won't attempt
-        // to recreate existing tables and throw PostgresException 42P07.
-        BaselineExistingDatabaseIfNeeded(dbConn, startupLogger);
-
-        startupLogger.LogInformation("Applying database migrations...");
-        try
+        if (db.Database.IsSqlServer())
         {
-            db.Database.Migrate();
-            startupLogger.LogInformation("Database migrations applied successfully.");
+            startupLogger.LogInformation("Using Microsoft SQL Server. Ensuring database and tables exist in 'pricingdb'...");
+            db.Database.EnsureCreated();
+            startupLogger.LogInformation("SQL Server 'pricingdb' tables verified.");
+
+            db.Database.ExecuteSqlRaw(@"
+                IF OBJECT_ID(N'Products', N'U') IS NULL
+                BEGIN
+                    CREATE TABLE Products (
+                        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                        AdminId INT NULL,
+                        Name NVARCHAR(200) NOT NULL,
+                        Description NVARCHAR(4000) NOT NULL,
+                        Features NVARCHAR(4000) NOT NULL,
+                        Price DECIMAL(18,2) NOT NULL,
+                        Url NVARCHAR(2048) NULL
+                    );
+                    CREATE INDEX IX_Products_AdminId ON Products (AdminId);
+                END
+            ");
+
+            db.Database.ExecuteSqlRaw(@"
+                IF OBJECT_ID(N'PortfolioServices', N'U') IS NULL
+                BEGIN
+                    CREATE TABLE PortfolioServices (
+                        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                        AdminId INT NULL,
+                        ProjectName NVARCHAR(200) NOT NULL,
+                        Category NVARCHAR(200) NOT NULL,
+                        Type NVARCHAR(20) NOT NULL,
+                        Description NVARCHAR(4000) NOT NULL,
+                        Features NVARCHAR(4000) NOT NULL,
+                        Price DECIMAL(18,2) NOT NULL,
+                        DemoLink NVARCHAR(2048) NULL
+                    );
+                    CREATE INDEX IX_PortfolioServices_AdminId ON PortfolioServices (AdminId);
+                END
+
+                IF COL_LENGTH('PortfolioServices', 'Category') IS NULL
+                    ALTER TABLE PortfolioServices ADD Category NVARCHAR(200) NOT NULL
+                        CONSTRAINT DF_PortfolioServices_Category DEFAULT N'';
+            ");
+
+            db.Database.ExecuteSqlRaw(@"
+                IF OBJECT_ID(N'IndustryDemoLinks', N'U') IS NULL
+                BEGIN
+                    CREATE TABLE IndustryDemoLinks (
+                        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                        AdminId INT NULL,
+                        Category NVARCHAR(200) NOT NULL,
+                        DemoLink NVARCHAR(2048) NOT NULL
+                    );
+                    CREATE INDEX IX_IndustryDemoLinks_AdminId ON IndustryDemoLinks (AdminId);
+                    CREATE INDEX IX_IndustryDemoLinks_AdminId_Category ON IndustryDemoLinks (AdminId, Category);
+                END
+            ");
+
+            db.Database.ExecuteSqlRaw(@"
+                IF OBJECT_ID(N'EmployeeSalaries', N'U') IS NULL
+                BEGIN
+                    CREATE TABLE EmployeeSalaries (
+                        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                        AdminId INT NOT NULL,
+                        EmployeeId INT NOT NULL,
+                        EmployeeName NVARCHAR(200) NOT NULL,
+                        BasicSalary DECIMAL(18,2) NOT NULL,
+                        Allowances DECIMAL(18,2) NOT NULL,
+                        Deductions DECIMAL(18,2) NOT NULL,
+                        EffectiveFrom DATETIME2 NOT NULL,
+                        PaymentMethod NVARCHAR(40) NOT NULL,
+                        Notes NVARCHAR(1000) NULL
+                    );
+                    CREATE UNIQUE INDEX IX_EmployeeSalaries_AdminId_EmployeeId
+                        ON EmployeeSalaries (AdminId, EmployeeId);
+                    CREATE INDEX IX_EmployeeSalaries_AdminId ON EmployeeSalaries (AdminId);
+                END
+
+                IF OBJECT_ID(N'PayrollRecords', N'U') IS NULL
+                BEGIN
+                    CREATE TABLE PayrollRecords (
+                        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                        AdminId INT NOT NULL,
+                        EmployeeId INT NOT NULL,
+                        EmployeeName NVARCHAR(200) NOT NULL,
+                        PeriodYear INT NOT NULL,
+                        PeriodMonth INT NOT NULL,
+                        BasicSalary DECIMAL(18,2) NOT NULL,
+                        Allowances DECIMAL(18,2) NOT NULL,
+                        OvertimePay DECIMAL(18,2) NOT NULL,
+                        Deductions DECIMAL(18,2) NOT NULL,
+                        GrossPay DECIMAL(18,2) NOT NULL,
+                        NetPay DECIMAL(18,2) NOT NULL,
+                        Status NVARCHAR(20) NOT NULL,
+                        ProcessedAt DATETIME2 NOT NULL,
+                        PaidAt DATETIME2 NULL,
+                        Notes NVARCHAR(1000) NULL
+                    );
+                    CREATE UNIQUE INDEX IX_PayrollRecords_AdminId_EmployeeId_PeriodYear_PeriodMonth
+                        ON PayrollRecords (AdminId, EmployeeId, PeriodYear, PeriodMonth);
+                    CREATE INDEX IX_PayrollRecords_AdminId ON PayrollRecords (AdminId);
+                END
+
+                IF OBJECT_ID(N'PayrollExpenses', N'U') IS NULL
+                BEGIN
+                    CREATE TABLE PayrollExpenses (
+                        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                        AdminId INT NOT NULL,
+                        ExpenseDate DATETIME2 NOT NULL,
+                        Category NVARCHAR(80) NOT NULL,
+                        Description NVARCHAR(250) NOT NULL,
+                        Amount DECIMAL(18,2) NOT NULL,
+                        EmployeeId INT NULL,
+                        EmployeeName NVARCHAR(200) NULL,
+                        PaymentMethod NVARCHAR(40) NOT NULL,
+                        Status NVARCHAR(20) NOT NULL,
+                        Notes NVARCHAR(1000) NULL,
+                        CreatedAt DATETIME2 NOT NULL
+                    );
+                    CREATE INDEX IX_PayrollExpenses_AdminId_ExpenseDate
+                        ON PayrollExpenses (AdminId, ExpenseDate);
+                END
+
+                IF OBJECT_ID(N'OvertimeRequests', N'U') IS NULL
+                BEGIN
+                    CREATE TABLE OvertimeRequests (
+                        Id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                        AdminId INT NOT NULL,
+                        EmployeeId INT NOT NULL,
+                        EmployeeName NVARCHAR(200) NOT NULL,
+                        WorkDate DATETIME2 NOT NULL,
+                        Hours DECIMAL(8,2) NOT NULL,
+                        HourlyRate DECIMAL(18,2) NOT NULL,
+                        TotalAmount DECIMAL(18,2) NOT NULL,
+                        Reason NVARCHAR(500) NOT NULL,
+                        Status NVARCHAR(20) NOT NULL,
+                        PayrollRecordId INT NULL,
+                        ReviewedAt DATETIME2 NULL,
+                        CreatedAt DATETIME2 NOT NULL,
+                        CONSTRAINT FK_OvertimeRequests_PayrollRecords_PayrollRecordId
+                            FOREIGN KEY (PayrollRecordId) REFERENCES PayrollRecords (Id)
+                    );
+                    CREATE INDEX IX_OvertimeRequests_AdminId_WorkDate
+                        ON OvertimeRequests (AdminId, WorkDate);
+                    CREATE INDEX IX_OvertimeRequests_PayrollRecordId
+                        ON OvertimeRequests (PayrollRecordId);
+                END
+            ");
+
+            db.Database.ExecuteSqlRaw(@"
+                IF COL_LENGTH('Users', 'EmploymentType') IS NULL
+                    ALTER TABLE Users ADD EmploymentType NVARCHAR(20) NULL;
+                IF COL_LENGTH('Users', 'SalesTargetValue') IS NULL
+                    ALTER TABLE Users ADD SalesTargetValue DECIMAL(18,2) NULL;
+                IF COL_LENGTH('Users', 'MinimumTargetValue') IS NULL
+                    ALTER TABLE Users ADD MinimumTargetValue DECIMAL(18,2) NULL;
+                IF COL_LENGTH('Users', 'AchievedTargetValue') IS NULL
+                    ALTER TABLE Users ADD AchievedTargetValue DECIMAL(18,2) NULL;
+                IF COL_LENGTH('Users', 'BelowTargetCommissionPercent') IS NULL
+                    ALTER TABLE Users ADD BelowTargetCommissionPercent DECIMAL(5,2) NULL;
+                IF COL_LENGTH('Users', 'AtOrAboveTargetCommissionPercent') IS NULL
+                    ALTER TABLE Users ADD AtOrAboveTargetCommissionPercent DECIMAL(5,2) NULL;
+            ");
+
+            try
+            {
+                db.Database.ExecuteSqlRaw(@"
+                    IF COL_LENGTH('SubscriptionPlans', 'MaxProjects') IS NULL
+                        ALTER TABLE SubscriptionPlans ADD MaxProjects INT NOT NULL DEFAULT 5;
+                    IF COL_LENGTH('CompanySubscriptions', 'MaxProjects') IS NULL
+                        ALTER TABLE CompanySubscriptions ADD MaxProjects INT NOT NULL DEFAULT 5;
+                    IF COL_LENGTH('CompanySubscriptions', 'MaxUsers') IS NULL
+                        ALTER TABLE CompanySubscriptions ADD MaxUsers INT NOT NULL DEFAULT 3;
+                    IF COL_LENGTH('CompanySubscriptions', 'PlanPrice') IS NULL
+                        ALTER TABLE CompanySubscriptions ADD PlanPrice DECIMAL(18,2) NOT NULL DEFAULT 0;
+                    IF COL_LENGTH('CompanySubscriptions', 'PurchaseDate') IS NULL
+                        ALTER TABLE CompanySubscriptions ADD PurchaseDate DATETIME2 NULL;
+                    IF COL_LENGTH('CompanySubscriptions', 'PaymentStatus') IS NULL
+                        ALTER TABLE CompanySubscriptions ADD PaymentStatus NVARCHAR(50) NOT NULL DEFAULT 'Pending';
+
+                    UPDATE CompanySubscriptions SET MaxUsers = 15 WHERE PlanName LIKE '%Pro%' OR PlanName LIKE '%Professional%';
+                    UPDATE CompanySubscriptions SET MaxUsers = 5 WHERE PlanName LIKE '%Starter%';
+                    UPDATE CompanySubscriptions SET MaxUsers = 3 WHERE PlanName LIKE '%Trial%';
+                ");
+            }
+            catch (Exception ex)
+            {
+                startupLogger.LogWarning(ex, "Column synchronization notice for SQL Server.");
+            }
+
+            LeadStore.SeedIfEmpty(db);
+            SettingsStore.SeedIfEmpty(db, builder.Configuration, startupLogger);
+            RoleStore.SeedIfEmpty(db);
+            startupLogger.LogInformation("SQL Server 'pricingdb' seeded successfully.");
         }
-        catch (Exception migEx) when (IsRelationAlreadyExistsException(migEx))
+        else
         {
-            startupLogger.LogWarning(
-                "One or more database tables already exist in PostgreSQL. " +
-                "Marking initial migration '20261015071435_InitialPg' as applied in '__EFMigrationsHistory' and continuing startup...");
-            EnsureMigrationMarked(dbConn, "20261015071435_InitialPg", startupLogger);
+            // If the database already contains tables (e.g. from schema.sql or an earlier migration name),
+            // baseline __EFMigrationsHistory with the current initial migration so Migrate() won't attempt
+            // to recreate existing tables and throw PostgresException 42P07.
+            RunWithDbRetry(startupLogger, "pre-migration baseline", () =>
+                BaselineExistingDatabaseIfNeeded(dbConn, startupLogger));
+
+            startupLogger.LogInformation("Applying database migrations...");
+            try
+            {
+                RunWithDbRetry(startupLogger, "database migrate", () => db.Database.Migrate());
+                startupLogger.LogInformation("Database migrations applied successfully.");
+            }
+            catch (Exception migEx) when (IsRelationAlreadyExistsException(migEx))
+            {
+                startupLogger.LogWarning(
+                    "One or more database tables already exist in PostgreSQL. " +
+                    "Marking initial migration '20261015071435_InitialPg' as applied in '__EFMigrationsHistory' and continuing startup...");
+                RunWithDbRetry(startupLogger, "mark migration applied", () =>
+                    EnsureMigrationMarked(dbConn, "20261015071435_InitialPg", startupLogger));
+            }
+
+            // Ensure all required tables, columns, and indexes exist in PostgreSQL (even if migration was skipped due to baseline)
+            DatabaseSchemaSync.EnsureAllTablesExist(dbConn, startupLogger);
+
+            LeadStore.SeedIfEmpty(db);
+            SettingsStore.SeedIfEmpty(db, builder.Configuration, startupLogger);
+            RoleStore.SeedIfEmpty(db);
         }
-
-        // Ensure all required tables, columns, and indexes exist in PostgreSQL (even if migration was skipped due to baseline)
-        DatabaseSchemaSync.EnsureAllTablesExist(dbConn, startupLogger);
-
-        LeadStore.SeedIfEmpty(db);
-        SettingsStore.SeedIfEmpty(db, builder.Configuration, startupLogger);
-        RoleStore.SeedIfEmpty(db);
 
         if (app.Environment.IsProduction())
         {
@@ -414,6 +679,9 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 
+// Automatically stop and gate access when Free Trial finishes
+app.UseMiddleware<CrmLeadManagement.Security.SubscriptionGateMiddleware>();
+
 app.MapControllers();
 
 app.MapControllerRoute(
@@ -421,6 +689,42 @@ app.MapControllerRoute(
     pattern: "{controller=Home}/{action=Index}/{id?}");
 
 app.Run();
+
+static void RunWithDbRetry(ILogger logger, string operation, Action action)
+{
+    const int maxAttempts = 5;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++)
+    {
+        try
+        {
+            action();
+            return;
+        }
+        catch (Exception ex) when (attempt < maxAttempts && IsTransientDbConnectionError(ex))
+        {
+            var delay = TimeSpan.FromSeconds(3 * attempt);
+            logger.LogWarning(
+                "Transient database error during {Operation} (attempt {Attempt}/{MaxAttempts}): {Message}. Retrying in {DelaySeconds}s...",
+                operation, attempt, maxAttempts, ex.Message, delay.TotalSeconds);
+            try { Npgsql.NpgsqlConnection.ClearAllPools(); } catch { /* ignore */ }
+            Thread.Sleep(delay);
+        }
+    }
+}
+
+static bool IsTransientDbConnectionError(Exception ex)
+{
+    for (var current = ex; current != null; current = current.InnerException)
+    {
+        if (current is TimeoutException or System.IO.EndOfStreamException or System.Net.Sockets.SocketException)
+            return true;
+        if (current is Npgsql.PostgresException)
+            return false;
+        if (current is Npgsql.NpgsqlException)
+            return true;
+    }
+    return false;
+}
 
 static void BaselineExistingDatabaseIfNeeded(System.Data.Common.DbConnection dbConn, ILogger logger)
 {
@@ -459,7 +763,7 @@ static void BaselineExistingDatabaseIfNeeded(System.Data.Common.DbConnection dbC
         ";
         cmd.ExecuteNonQuery();
     }
-    catch (Exception ex)
+    catch (Exception ex) when (!IsTransientDbConnectionError(ex))
     {
         logger.LogWarning(ex, "Pre-migration baseline check encountered an issue; proceeding with standard migration.");
     }

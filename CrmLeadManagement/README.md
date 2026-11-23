@@ -1,13 +1,11 @@
-# NimbusCRM — Lead Management (ASP.NET Core MVC)
+# VisionCRM — Lead Management (ASP.NET Core MVC)
 
 A production-styled ASP.NET Core **MVC** CRM Lead Management module (migrated
 from Razor Pages — there is no `Pages/` folder or `PageModel` anywhere in the
-project anymore; every screen is a Controller + View). Data lives in static
-in-memory stores (`Models/LeadStore.cs` and `Models/SettingsStore.cs`) rather
-than a database — there's no persistence across app restarts, but Add / Edit /
-Delete are **real, working operations** against that in-memory store for the
-lifetime of the running app: add a lead, refresh, edit it, refresh, delete
-it — the changes stick.
+project anymore; every screen is a Controller + View). Lead and Settings
+sample data lives in static in-memory stores (`Models/LeadStore.cs` and
+`Models/SettingsStore.cs`) and does not persist across app restarts. HR records
+for leaves, attendance, and shift rosters are stored in the database.
 
 ## What's implemented
 
@@ -32,6 +30,9 @@ it — the changes stick.
    sources, add/remove users, save follow-up defaults). Status/Source/
    Assigned-To dropdowns throughout the app read from this store, so changes
    in Settings show up immediately in the Add/Edit Lead form.
+6. **HR** — tenant-admin pages for leave requests (including approve/reject),
+   daily attendance (status and check-in/out), and employee shift rosters.
+   Records are stored per tenant and use team members as the employee list.
 
 Requirement and Assign/Reassign modals on Lead Details are unchanged, as are
 all existing lead fields and the Lead List → View → Lead Details flow.
@@ -63,6 +64,9 @@ Then open the URL shown in the console (typically `https://localhost:5001` or
   and an **Add Lead** button that opens the full Add Lead form in a modal.
 - **`/Settings`** — Lead Status, Lead Sources, Users/Roles, Follow-up
   Settings.
+- **`/HR/Leaves`**, **`/HR/Attendance`**, and **`/HR/ShiftRoster`** — create,
+  edit, and delete tenant-scoped HR records; leave requests can also be
+  approved or rejected.
 - **`POST /Lead/Save`**, **`POST /Lead/Delete`** — shared by both list
   pages; each form carries a hidden `returnUrl` so the user lands back on
   the page they started from.
@@ -174,7 +178,7 @@ The REST API is secured with plain opaque Bearer token authentication (no JWT). 
 
 | Key | Default | Description |
 |---|---|---|
-| `Seed:AdminEmail` | `"admin@nimbuscrm.com"` | Initial administrator email address. |
+| `Seed:AdminEmail` | `"admin@visioncrm.com"` | Initial administrator email address. |
 | `Seed:AdminPassword` | `"AdminPassword123!"` | Initial administrator password hashed with `PasswordHasher<UserRoleEntry>`. |
 | `BearerAuth:TokenHours` | `12` | Base lifetime of issued access tokens in hours. |
 | `BearerAuth:SlidingExpiration` | `true` | If true, extends token expiry when used and less than half of lifetime remains. |
@@ -216,7 +220,7 @@ dotnet ef migrations remove
 2. Log in by calling `POST /api/auth/login` with your credentials:
    ```json
    {
-     "email": "admin@nimbuscrm.com",
+     "email": "admin@visioncrm.com",
      "password": "AdminPassword123!"
    }
    ```

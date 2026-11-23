@@ -35,6 +35,7 @@ function openModal(id) {
   if (el) {
     el.classList.add('show');
     el.classList.add('open');
+    el.style.display = 'flex';
   }
 }
 
@@ -43,6 +44,7 @@ function closeModal(id) {
   if (el) {
     el.classList.remove('show');
     el.classList.remove('open');
+    el.style.display = 'none';
   }
 }
 
@@ -51,6 +53,7 @@ document.addEventListener('click', function (e) {
   if (e.target.classList && e.target.classList.contains('modal-backdrop-custom')) {
     e.target.classList.remove('show');
     e.target.classList.remove('open');
+    e.target.style.display = 'none';
   }
 });
 
@@ -60,6 +63,7 @@ document.addEventListener('keydown', function (e) {
     document.querySelectorAll('.modal-backdrop-custom').forEach(m => {
       m.classList.remove('show');
       m.classList.remove('open');
+      m.style.display = 'none';
     });
   }
 });

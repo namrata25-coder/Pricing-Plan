@@ -19,6 +19,9 @@ public static class DbAccessor
         _httpContextAccessor = httpContextAccessor;
     }
 
+    /// <summary>The HttpContext for the current HTTP request.</summary>
+    public static HttpContext? CurrentContext => _httpContextAccessor?.HttpContext;
+
     /// <summary>The AppDbContext for the current HTTP request.</summary>
     public static AppDbContext Db
     {

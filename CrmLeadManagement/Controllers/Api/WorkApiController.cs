@@ -35,14 +35,28 @@ public class WorkApiController : ControllerBase
     {
         try
         {
-            var projects = await _db.WorkProjects
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var projects = await WorkDataScope.Projects(_db, currentUser)
                 .Include(p => p.Milestones)
                     .ThenInclude(m => m.Tasks)
                 .Include(p => p.Tasks)
                 .ToListAsync();
+            foreach (var project in projects)
+            {
+                WorkDataScope.RestrictProjectContents(project, currentUser);
+            }
 
-            var milestones = await _db.WorkMilestones.Include(m => m.Tasks).ToListAsync();
-            var tasks = await _db.WorkTasks.ToListAsync();
+            var milestones = await WorkDataScope.Milestones(_db, currentUser).Include(m => m.Tasks).ToListAsync();
+            var tasks = await WorkDataScope.Tasks(_db, currentUser).ToListAsync();
+            if (!WorkDataScope.HasFullAccess(currentUser))
+            {
+                foreach (var milestone in milestones)
+                {
+                    milestone.Tasks = milestone.Tasks
+                        .Where(task => WorkDataScope.IsSelf(task.AssignedMember, currentUser))
+                        .ToList();
+                }
+            }
 
             var totalProjects = projects.Count;
             var activeProjects = projects.Count(p => string.Equals(p.Status, "Active", StringComparison.OrdinalIgnoreCase));
@@ -97,7 +111,8 @@ public class WorkApiController : ControllerBase
     {
         try
         {
-            var query = _db.WorkProjects
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var query = WorkDataScope.Projects(_db, currentUser)
                 .Include(p => p.Milestones)
                 .Include(p => p.Tasks)
                 .Include(p => p.Invoices)
@@ -111,6 +126,10 @@ public class WorkApiController : ControllerBase
             }
 
             var projects = await query.ToListAsync();
+            foreach (var project in projects)
+            {
+                WorkDataScope.RestrictProjectContents(project, currentUser);
+            }
             var reportData = projects.Select(p => new
             {
                 p.Id,

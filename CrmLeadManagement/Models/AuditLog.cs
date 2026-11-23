@@ -7,6 +7,7 @@ namespace CrmLeadManagement.Models;
 public class AuditLog
 {
     public int Id { get; set; }
+    public int? AdminId { get; set; }
     public DateTime Timestamp { get; set; } = DateTime.UtcNow;
     public string Action { get; set; } = ""; // "CreateUser", "UpdateUser", "ChangeRole", "ChangeStatus", "ResetPassword", "DeleteUser", "ChangePassword"
     public string? PerformedBy { get; set; } = "";

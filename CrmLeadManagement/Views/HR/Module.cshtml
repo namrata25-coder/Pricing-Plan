@@ -1,0 +1,382 @@
+@model HRModulePageViewModel
+@{
+    ViewData["Title"] = Model.Title;
+    var activePage = Model.ActivePage;
+}
+
+<main class="payroll-page">
+    <header class="payroll-page-header">
+        <div>
+            <div class="payroll-breadcrumb">
+                <span>Administration</span>
+                <i class="bi bi-chevron-right"></i>
+                <span>HR</span>
+            </div>
+            <h1>
+                <span class="payroll-title-icon"><i class="bi @Model.Icon"></i></span>
+                @Model.Title
+            </h1>
+            <p>Manage employee @Model.Title.ToLowerInvariant() records.</p>
+        </div>
+    </header>
+
+    <nav class="payroll-tabs" aria-label="HR modules">
+        <a asp-action="Leaves" class="payroll-tab @(activePage == "HRLeaves" ? "active" : "")"><i class="bi bi-calendar-check"></i><span>Leaves</span></a>
+        <a asp-action="Attendance" class="payroll-tab @(activePage == "HRAttendance" ? "active" : "")"><i class="bi bi-clock-history"></i><span>Attendance</span></a>
+        <a asp-action="ShiftRoster" class="payroll-tab @(activePage == "HRShiftRoster" ? "active" : "")"><i class="bi bi-calendar-week"></i><span>Shift Roster</span></a>
+    </nav>
+
+    @if (TempData["SuccessMessage"] is string successMessage)
+    {
+        <div class="payroll-alert success" role="status"><i class="bi bi-check-circle-fill"></i><span>@successMessage</span></div>
+    }
+    @if (TempData["ErrorMessage"] is string errorMessage)
+    {
+        <div class="payroll-alert error" role="alert"><i class="bi bi-exclamation-circle-fill"></i><span>@errorMessage</span></div>
+    }
+
+    @if (activePage == "HRLeaves")
+    {
+        <div class="payroll-content-grid">
+            <section class="payroll-panel payroll-form-panel">
+                <div class="payroll-panel-heading">
+                    <div>
+                        <h2>@(Model.LeaveForm.Id == 0 ? "New leave request" : "Edit leave request")</h2>
+                        <p>Submit or update an employee leave request.</p>
+                    </div>
+                </div>
+                <div class="payroll-panel-body">
+                    <form asp-action="SaveLeave" method="post">
+                        <input asp-for="LeaveForm.Id" type="hidden" />
+                        <div asp-validation-summary="ModelOnly" class="text-danger"></div>
+                        <div class="payroll-form-grid">
+                            <div class="payroll-field full">
+                                <label asp-for="LeaveForm.EmployeeId">Employee</label>
+                                <select asp-for="LeaveForm.EmployeeId">
+                                    <option value="0">Select an employee</option>
+                                    @foreach (var employee in Model.Employees)
+                                    {
+                                        <option value="@employee.Id">@employee.Name</option>
+                                    }
+                                </select>
+                            </div>
+                            <div class="payroll-field">
+                                <label asp-for="LeaveForm.LeaveType">Leave type</label>
+                                <select asp-for="LeaveForm.LeaveType">
+                                    <option>Annual</option>
+                                    <option>Sick</option>
+                                    <option>Casual</option>
+                                    <option>Unpaid</option>
+                                    <option>Other</option>
+                                </select>
+                            </div>
+                            <div class="payroll-field">
+                                <label asp-for="LeaveForm.StartDate">From</label>
+                                <input asp-for="LeaveForm.StartDate" type="date" />
+                            </div>
+                            <div class="payroll-field">
+                                <label asp-for="LeaveForm.EndDate">To</label>
+                                <input asp-for="LeaveForm.EndDate" type="date" />
+                            </div>
+                            <div class="payroll-field full">
+                                <label asp-for="LeaveForm.Reason">Reason</label>
+                                <textarea asp-for="LeaveForm.Reason" rows="3" maxlength="500" placeholder="Add a reason for the leave"></textarea>
+                            </div>
+                        </div>
+                        <div class="payroll-form-actions">
+                            <button class="btn btn-primary" type="submit" disabled="@(Model.Employees.Count == 0)">
+                                <i class="bi bi-check2"></i> Save leave
+                            </button>
+                            @if (Model.LeaveForm.Id != 0)
+                            {
+                                <a asp-action="Leaves" class="btn btn-outline">Cancel</a>
+                            }
+                        </div>
+                        @if (Model.Employees.Count == 0)
+                        {
+                            <p class="payroll-field-hint">Add team members before creating leave requests.</p>
+                        }
+                    </form>
+                </div>
+            </section>
+
+            <section class="payroll-panel">
+                <div class="payroll-panel-heading">
+                    <div><h2>Leave requests</h2><p>Approve or reject pending requests.</p></div>
+                    <span class="payroll-count">@Model.LeaveRequests.Count records</span>
+                </div>
+                <div class="payroll-table-wrap">
+                    <table class="payroll-table">
+                        <thead><tr><th>Employee</th><th>Type</th><th>Dates</th><th>Reason</th><th>Status</th><th>Actions</th></tr></thead>
+                        <tbody>
+                        @if (Model.LeaveRequests.Count == 0)
+                        {
+                            <tr><td colspan="6"><div class="payroll-empty"><span><i class="bi bi-calendar2-x"></i></span><strong>No leave requests yet</strong><small>Use the form to add the first request.</small></div></td></tr>
+                        }
+                        @foreach (var leave in Model.LeaveRequests)
+                        {
+                            <tr>
+                                <td><strong>@leave.EmployeeName</strong></td>
+                                <td>@leave.LeaveType</td>
+                                <td>@leave.StartDate.ToString("dd MMM yyyy") - @leave.EndDate.ToString("dd MMM yyyy")</td>
+                                <td>@leave.Reason</td>
+                                <td><span class="payroll-status @leave.Status.ToLowerInvariant()">@leave.Status</span></td>
+                                <td>
+                                    <div class="payroll-actions">
+                                        <a asp-action="Leaves" asp-route-editId="@leave.Id" class="btn btn-soft btn-sm" aria-label="Edit leave request"><i class="bi bi-pencil"></i></a>
+                                        @if (leave.Status == "Pending")
+                                        {
+                                            <form asp-action="ReviewLeave" method="post">
+                                                <input type="hidden" name="id" value="@leave.Id" />
+                                                <input type="hidden" name="status" value="Approved" />
+                                                <button class="btn btn-soft btn-sm" type="submit" aria-label="Approve leave request"><i class="bi bi-check-lg"></i></button>
+                                            </form>
+                                            <form asp-action="ReviewLeave" method="post">
+                                                <input type="hidden" name="id" value="@leave.Id" />
+                                                <input type="hidden" name="status" value="Rejected" />
+                                                <button class="btn btn-soft btn-sm" type="submit" aria-label="Reject leave request"><i class="bi bi-x-lg"></i></button>
+                                            </form>
+                                        }
+                                        <form asp-action="DeleteLeave" method="post" onsubmit="return confirm('Delete this leave request?');">
+                                            <input type="hidden" name="id" value="@leave.Id" />
+                                            <button class="btn btn-soft btn-sm danger" type="submit" aria-label="Delete leave request"><i class="bi bi-trash"></i></button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+    }
+    else if (activePage == "HRAttendance")
+    {
+        <div class="payroll-content-grid">
+            <section class="payroll-panel payroll-form-panel">
+                <div class="payroll-panel-heading">
+                    <div>
+                        <h2>@(Model.AttendanceForm.Id == 0 ? "Record attendance" : "Edit attendance")</h2>
+                        <p>Record daily attendance, check-in, and check-out.</p>
+                    </div>
+                </div>
+                <div class="payroll-panel-body">
+                    <form asp-action="SaveAttendance" method="post">
+                        <input asp-for="AttendanceForm.Id" type="hidden" />
+                        <div asp-validation-summary="ModelOnly" class="text-danger"></div>
+                        <div class="payroll-form-grid">
+                            <div class="payroll-field full">
+                                <label asp-for="AttendanceForm.EmployeeId">Employee</label>
+                                <select asp-for="AttendanceForm.EmployeeId">
+                                    <option value="0">Select an employee</option>
+                                    @foreach (var employee in Model.Employees)
+                                    {
+                                        <option value="@employee.Id">@employee.Name</option>
+                                    }
+                                </select>
+                            </div>
+                            <div class="payroll-field">
+                                <label asp-for="AttendanceForm.WorkDate">Date</label>
+                                <input asp-for="AttendanceForm.WorkDate" type="date" />
+                            </div>
+                            <div class="payroll-field">
+                                <label asp-for="AttendanceForm.Status">Status</label>
+                                <select asp-for="AttendanceForm.Status">
+                                    <option>Present</option>
+                                    <option>Absent</option>
+                                    <option>Half Day</option>
+                                    <option>On Leave</option>
+                                </select>
+                            </div>
+                            <div class="payroll-field">
+                                <label asp-for="AttendanceForm.CheckIn">Check-in</label>
+                                <input asp-for="AttendanceForm.CheckIn" type="time" />
+                            </div>
+                            <div class="payroll-field">
+                                <label asp-for="AttendanceForm.CheckOut">Check-out</label>
+                                <input asp-for="AttendanceForm.CheckOut" type="time" />
+                            </div>
+                            <div class="payroll-field full">
+                                <label asp-for="AttendanceForm.Notes">Notes</label>
+                                <textarea asp-for="AttendanceForm.Notes" rows="2" maxlength="500"></textarea>
+                            </div>
+                        </div>
+                        <div class="payroll-form-actions">
+                            <button class="btn btn-primary" type="submit" disabled="@(Model.Employees.Count == 0)">
+                                <i class="bi bi-check2"></i> Save attendance
+                            </button>
+                            @if (Model.AttendanceForm.Id != 0)
+                            {
+                                <a asp-action="Attendance" class="btn btn-outline">Cancel</a>
+                            }
+                        </div>
+                        @if (Model.Employees.Count == 0)
+                        {
+                            <p class="payroll-field-hint">Add team members before recording attendance.</p>
+                        }
+                    </form>
+                </div>
+            </section>
+
+            <section class="payroll-panel">
+                <div class="payroll-panel-heading">
+                    <div><h2>Attendance records</h2><p>One attendance record per employee per day.</p></div>
+                    <span class="payroll-count">@Model.AttendanceRecords.Count records</span>
+                </div>
+                <div class="payroll-table-wrap">
+                    <table class="payroll-table">
+                        <thead><tr><th>Date</th><th>Employee</th><th>Status</th><th>Check-in</th><th>Check-out</th><th>Notes</th><th>Actions</th></tr></thead>
+                        <tbody>
+                        @if (Model.AttendanceRecords.Count == 0)
+                        {
+                            <tr><td colspan="7"><div class="payroll-empty"><span><i class="bi bi-clock-history"></i></span><strong>No attendance records yet</strong><small>Use the form to record attendance.</small></div></td></tr>
+                        }
+                        @foreach (var record in Model.AttendanceRecords)
+                        {
+                            <tr>
+                                <td>@record.WorkDate.ToString("dd MMM yyyy")</td>
+                                <td><strong>@record.EmployeeName</strong></td>
+                                <td><span class="payroll-status @(record.Status.ToLowerInvariant().Replace(" ", "-"))">@record.Status</span></td>
+                                <td>@(record.CheckIn?.ToString("HH:mm") ?? "-")</td>
+                                <td>@(record.CheckOut?.ToString("HH:mm") ?? "-")</td>
+                                <td>@(record.Notes ?? "-")</td>
+                                <td>
+                                    <div class="payroll-actions">
+                                        <a asp-action="Attendance" asp-route-editId="@record.Id" class="btn btn-soft btn-sm" aria-label="Edit attendance"><i class="bi bi-pencil"></i></a>
+                                        <form asp-action="DeleteAttendance" method="post" onsubmit="return confirm('Delete this attendance record?');">
+                                            <input type="hidden" name="id" value="@record.Id" />
+                                            <button class="btn btn-soft btn-sm danger" type="submit" aria-label="Delete attendance"><i class="bi bi-trash"></i></button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+    }
+    else if (activePage == "HRShiftRoster")
+    {
+        <div class="payroll-content-grid">
+            <section class="payroll-panel payroll-form-panel">
+                <div class="payroll-panel-heading">
+                    <div>
+                        <h2>@(Model.ShiftRosterForm.Id == 0 ? "Assign a shift" : "Edit shift")</h2>
+                        <p>Schedule one shift per employee for a day.</p>
+                    </div>
+                </div>
+                <div class="payroll-panel-body">
+                    <form asp-action="SaveShiftRoster" method="post">
+                        <input asp-for="ShiftRosterForm.Id" type="hidden" />
+                        <div asp-validation-summary="ModelOnly" class="text-danger"></div>
+                        <div class="payroll-form-grid">
+                            <div class="payroll-field full">
+                                <label asp-for="ShiftRosterForm.EmployeeId">Employee</label>
+                                <select asp-for="ShiftRosterForm.EmployeeId">
+                                    <option value="0">Select an employee</option>
+                                    @foreach (var employee in Model.Employees)
+                                    {
+                                        <option value="@employee.Id">@employee.Name</option>
+                                    }
+                                </select>
+                            </div>
+                            <div class="payroll-field">
+                                <label asp-for="ShiftRosterForm.ShiftDate">Date</label>
+                                <input asp-for="ShiftRosterForm.ShiftDate" type="date" />
+                            </div>
+                            <div class="payroll-field">
+                                <label asp-for="ShiftRosterForm.ShiftName">Shift name</label>
+                                <input asp-for="ShiftRosterForm.ShiftName" maxlength="80" placeholder="e.g. Morning" />
+                            </div>
+                            <div class="payroll-field">
+                                <label asp-for="ShiftRosterForm.StartTime">Start time</label>
+                                <input asp-for="ShiftRosterForm.StartTime" type="time" />
+                            </div>
+                            <div class="payroll-field">
+                                <label asp-for="ShiftRosterForm.EndTime">End time</label>
+                                <input asp-for="ShiftRosterForm.EndTime" type="time" />
+                            </div>
+                            <div class="payroll-field">
+                                <label asp-for="ShiftRosterForm.BreakMinutes">Break (minutes)</label>
+                                <input asp-for="ShiftRosterForm.BreakMinutes" type="number" min="0" max="480" />
+                            </div>
+                            <div class="payroll-field full">
+                                <label asp-for="ShiftRosterForm.Notes">Notes</label>
+                                <textarea asp-for="ShiftRosterForm.Notes" rows="2" maxlength="500"></textarea>
+                            </div>
+                        </div>
+                        <div class="payroll-form-actions">
+                            <button class="btn btn-primary" type="submit" disabled="@(Model.Employees.Count == 0)">
+                                <i class="bi bi-check2"></i> Save shift
+                            </button>
+                            @if (Model.ShiftRosterForm.Id != 0)
+                            {
+                                <a asp-action="ShiftRoster" class="btn btn-outline">Cancel</a>
+                            }
+                        </div>
+                        @if (Model.Employees.Count == 0)
+                        {
+                            <p class="payroll-field-hint">Add team members before assigning shifts.</p>
+                        }
+                    </form>
+                </div>
+            </section>
+
+            <section class="payroll-panel">
+                <div class="payroll-panel-heading">
+                    <div><h2>Shift roster</h2><p>Daily employee shift assignments.</p></div>
+                    <span class="payroll-count">@Model.ShiftRosterEntries.Count assignments</span>
+                </div>
+                <div class="payroll-table-wrap">
+                    <table class="payroll-table">
+                        <thead><tr><th>Date</th><th>Employee</th><th>Shift</th><th>Hours</th><th>Break</th><th>Notes</th><th>Actions</th></tr></thead>
+                        <tbody>
+                        @if (Model.ShiftRosterEntries.Count == 0)
+                        {
+                            <tr><td colspan="7"><div class="payroll-empty"><span><i class="bi bi-calendar-week"></i></span><strong>No shifts scheduled yet</strong><small>Use the form to create the first assignment.</small></div></td></tr>
+                        }
+                        @foreach (var shift in Model.ShiftRosterEntries)
+                        {
+                            <tr>
+                                <td>@shift.ShiftDate.ToString("dd MMM yyyy")</td>
+                                <td><strong>@shift.EmployeeName</strong></td>
+                                <td>@shift.ShiftName</td>
+                                <td>@shift.StartTime.ToString("HH:mm") - @shift.EndTime.ToString("HH:mm")</td>
+                                <td>@shift.BreakMinutes min</td>
+                                <td>@(shift.Notes ?? "-")</td>
+                                <td>
+                                    <div class="payroll-actions">
+                                        <a asp-action="ShiftRoster" asp-route-editId="@shift.Id" class="btn btn-soft btn-sm" aria-label="Edit shift"><i class="bi bi-pencil"></i></a>
+                                        <form asp-action="DeleteShiftRoster" method="post" onsubmit="return confirm('Delete this shift assignment?');">
+                                            <input type="hidden" name="id" value="@shift.Id" />
+                                            <button class="btn btn-soft btn-sm danger" type="submit" aria-label="Delete shift"><i class="bi bi-trash"></i></button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+    }
+    else
+    {
+        <section class="payroll-panel">
+            <div class="payroll-panel-heading">
+                <div><h2>@Model.Title</h2><p>This HR module is available from the sidebar.</p></div>
+            </div>
+            <div class="payroll-panel-body">
+                <div class="payroll-empty">
+                    <span><i class="bi bi-tools"></i></span>
+                    <strong>@Model.Title</strong>
+                    <small>Record management for this module has not been implemented yet.</small>
+                </div>
+            </div>
+        </section>
+    }
+</main>

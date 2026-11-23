@@ -25,6 +25,16 @@ public class AppDbContext : DbContext
     public DbSet<RoleMaster> RoleMasters => Set<RoleMaster>();
     public DbSet<AccessToken> AccessTokens => Set<AccessToken>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<Product> Products => Set<Product>();
+    public DbSet<PortfolioService> PortfolioServices => Set<PortfolioService>();
+    public DbSet<IndustryDemoLink> IndustryDemoLinks => Set<IndustryDemoLink>();
+    public DbSet<EmployeeSalary> EmployeeSalaries => Set<EmployeeSalary>();
+    public DbSet<PayrollRecord> PayrollRecords => Set<PayrollRecord>();
+    public DbSet<PayrollExpense> PayrollExpenses => Set<PayrollExpense>();
+    public DbSet<OvertimeRequest> OvertimeRequests => Set<OvertimeRequest>();
+    public DbSet<HRLeaveRequest> HRLeaveRequests => Set<HRLeaveRequest>();
+    public DbSet<HRAttendanceRecord> HRAttendanceRecords => Set<HRAttendanceRecord>();
+    public DbSet<HRShiftRosterEntry> HRShiftRosterEntries => Set<HRShiftRosterEntry>();
 
     public DbSet<EstimationEntry> Estimations => Set<EstimationEntry>();
     public DbSet<QuotationEntry> Quotations => Set<QuotationEntry>();
@@ -42,6 +52,16 @@ public class AppDbContext : DbContext
     public DbSet<WorkTimesheet>        WorkTimesheets        => Set<WorkTimesheet>();
     public DbSet<WorkExpense>          WorkExpenses          => Set<WorkExpense>();
     public DbSet<WorkNote>             WorkNotes             => Set<WorkNote>();
+
+    // SuperAdmin SaaS Management
+    public DbSet<SaaSSubscriptionPlan> SubscriptionPlans     => Set<SaaSSubscriptionPlan>();
+    public DbSet<CompanySubscription>  CompanySubscriptions  => Set<CompanySubscription>();
+    public DbSet<CmsLandingPageConfig> LandingPageConfigs    => Set<CmsLandingPageConfig>();
+    public DbSet<CmsFaqArticle>        FaqArticles           => Set<CmsFaqArticle>();
+    public DbSet<SaaSEmailTemplate>    EmailTemplates        => Set<SaaSEmailTemplate>();
+    public DbSet<SaaSPlatformSettings> PlatformSettings      => Set<SaaSPlatformSettings>();
+    public DbSet<BankTransferRequest>  BankTransferRequests  => Set<BankTransferRequest>();
+    public DbSet<SubscriptionPaymentRecord> SubscriptionPayments => Set<SubscriptionPaymentRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -102,7 +122,142 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<UserRoleEntry>().HasKey(u => u.Id);
         modelBuilder.Entity<UserRoleEntry>().HasIndex(u => u.Email).IsUnique();
+        modelBuilder.Entity<UserRoleEntry>().Property(u => u.SalesTargetValue).HasPrecision(18, 2);
+        modelBuilder.Entity<UserRoleEntry>().Property(u => u.MinimumTargetValue).HasPrecision(18, 2);
+        modelBuilder.Entity<UserRoleEntry>().Property(u => u.AchievedTargetValue).HasPrecision(18, 2);
+        modelBuilder.Entity<UserRoleEntry>().Property(u => u.BelowTargetCommissionPercent).HasPrecision(5, 2);
+        modelBuilder.Entity<UserRoleEntry>().Property(u => u.AtOrAboveTargetCommissionPercent).HasPrecision(5, 2);
         modelBuilder.Entity<AuditLog>().HasKey(a => a.Id);
+
+        modelBuilder.Entity<Product>(product =>
+        {
+            product.ToTable("Products");
+            product.HasKey(p => p.Id);
+            product.Property(p => p.Price).HasPrecision(18, 2);
+            product.Property(p => p.Name).IsRequired().HasMaxLength(200);
+            product.Property(p => p.Description).IsRequired().HasMaxLength(4000);
+            product.Property(p => p.Features).IsRequired().HasMaxLength(4000);
+            product.Property(p => p.Url).HasMaxLength(2048);
+            product.HasIndex(p => p.AdminId);
+        });
+
+        modelBuilder.Entity<PortfolioService>(service =>
+        {
+            service.ToTable("PortfolioServices");
+            service.HasKey(s => s.Id);
+            service.Property(s => s.ProjectName).IsRequired().HasMaxLength(200);
+            service.Property(s => s.Category).IsRequired().HasMaxLength(200);
+            service.Property(s => s.Type).IsRequired().HasMaxLength(20);
+            service.Property(s => s.Description).IsRequired().HasMaxLength(4000);
+            service.Property(s => s.Features).IsRequired().HasMaxLength(4000);
+            service.Property(s => s.Price).HasPrecision(18, 2);
+            service.Property(s => s.DemoLink).HasMaxLength(2048);
+            service.HasIndex(s => s.AdminId);
+        });
+
+        modelBuilder.Entity<IndustryDemoLink>(industryDemo =>
+        {
+            industryDemo.ToTable("IndustryDemoLinks");
+            industryDemo.HasKey(link => link.Id);
+            industryDemo.Property(link => link.Category).IsRequired().HasMaxLength(200);
+            industryDemo.Property(link => link.DemoLink).IsRequired().HasMaxLength(2048);
+            industryDemo.HasIndex(link => link.AdminId);
+            industryDemo.HasIndex(link => new { link.AdminId, link.Category });
+        });
+
+        modelBuilder.Entity<EmployeeSalary>(salary =>
+        {
+            salary.ToTable("EmployeeSalaries");
+            salary.HasKey(s => s.Id);
+            salary.Property(s => s.EmployeeName).IsRequired().HasMaxLength(200);
+            salary.Property(s => s.BasicSalary).HasPrecision(18, 2);
+            salary.Property(s => s.Allowances).HasPrecision(18, 2);
+            salary.Property(s => s.Deductions).HasPrecision(18, 2);
+            salary.Property(s => s.PaymentMethod).IsRequired().HasMaxLength(40);
+            salary.Property(s => s.Notes).HasMaxLength(1000);
+            salary.HasIndex(s => new { s.AdminId, s.EmployeeId }).IsUnique();
+            salary.HasIndex(s => s.AdminId);
+        });
+
+        modelBuilder.Entity<PayrollRecord>(record =>
+        {
+            record.ToTable("PayrollRecords");
+            record.HasKey(r => r.Id);
+            record.Property(r => r.EmployeeName).IsRequired().HasMaxLength(200);
+            record.Property(r => r.BasicSalary).HasPrecision(18, 2);
+            record.Property(r => r.Allowances).HasPrecision(18, 2);
+            record.Property(r => r.OvertimePay).HasPrecision(18, 2);
+            record.Property(r => r.Deductions).HasPrecision(18, 2);
+            record.Property(r => r.GrossPay).HasPrecision(18, 2);
+            record.Property(r => r.NetPay).HasPrecision(18, 2);
+            record.Property(r => r.Status).IsRequired().HasMaxLength(20);
+            record.Property(r => r.Notes).HasMaxLength(1000);
+            record.HasIndex(r => new { r.AdminId, r.EmployeeId, r.PeriodYear, r.PeriodMonth }).IsUnique();
+            record.HasIndex(r => r.AdminId);
+        });
+
+        modelBuilder.Entity<PayrollExpense>(expense =>
+        {
+            expense.ToTable("PayrollExpenses");
+            expense.HasKey(e => e.Id);
+            expense.Property(e => e.Category).IsRequired().HasMaxLength(80);
+            expense.Property(e => e.Description).IsRequired().HasMaxLength(250);
+            expense.Property(e => e.Amount).HasPrecision(18, 2);
+            expense.Property(e => e.EmployeeName).HasMaxLength(200);
+            expense.Property(e => e.PaymentMethod).IsRequired().HasMaxLength(40);
+            expense.Property(e => e.Status).IsRequired().HasMaxLength(20);
+            expense.Property(e => e.Notes).HasMaxLength(1000);
+            expense.HasIndex(e => new { e.AdminId, e.ExpenseDate });
+        });
+
+        modelBuilder.Entity<OvertimeRequest>(overtime =>
+        {
+            overtime.ToTable("OvertimeRequests");
+            overtime.HasKey(o => o.Id);
+            overtime.Property(o => o.EmployeeName).IsRequired().HasMaxLength(200);
+            overtime.Property(o => o.Hours).HasPrecision(8, 2);
+            overtime.Property(o => o.HourlyRate).HasPrecision(18, 2);
+            overtime.Property(o => o.TotalAmount).HasPrecision(18, 2);
+            overtime.Property(o => o.Reason).IsRequired().HasMaxLength(500);
+            overtime.Property(o => o.Status).IsRequired().HasMaxLength(20);
+            overtime.HasOne(o => o.PayrollRecord)
+                .WithMany()
+                .HasForeignKey(o => o.PayrollRecordId)
+                .OnDelete(DeleteBehavior.NoAction);
+            overtime.HasIndex(o => new { o.AdminId, o.WorkDate });
+            overtime.HasIndex(o => o.PayrollRecordId);
+        });
+
+        modelBuilder.Entity<HRLeaveRequest>(leave =>
+        {
+            leave.ToTable("HRLeaveRequests");
+            leave.HasKey(r => r.Id);
+            leave.Property(r => r.EmployeeName).IsRequired().HasMaxLength(200);
+            leave.Property(r => r.LeaveType).IsRequired().HasMaxLength(40);
+            leave.Property(r => r.Reason).IsRequired().HasMaxLength(500);
+            leave.Property(r => r.Status).IsRequired().HasMaxLength(20);
+            leave.HasIndex(r => new { r.AdminId, r.StartDate });
+        });
+
+        modelBuilder.Entity<HRAttendanceRecord>(attendance =>
+        {
+            attendance.ToTable("HRAttendanceRecords");
+            attendance.HasKey(r => r.Id);
+            attendance.Property(r => r.EmployeeName).IsRequired().HasMaxLength(200);
+            attendance.Property(r => r.Status).IsRequired().HasMaxLength(20);
+            attendance.Property(r => r.Notes).HasMaxLength(500);
+            attendance.HasIndex(r => new { r.AdminId, r.EmployeeId, r.WorkDate }).IsUnique();
+        });
+
+        modelBuilder.Entity<HRShiftRosterEntry>(shift =>
+        {
+            shift.ToTable("HRShiftRosterEntries");
+            shift.HasKey(r => r.Id);
+            shift.Property(r => r.EmployeeName).IsRequired().HasMaxLength(200);
+            shift.Property(r => r.ShiftName).IsRequired().HasMaxLength(80);
+            shift.Property(r => r.Notes).HasMaxLength(500);
+            shift.HasIndex(r => new { r.AdminId, r.EmployeeId, r.ShiftDate }).IsUnique();
+        });
 
         modelBuilder.Entity<LeadStatusOption>().HasKey(s => s.Id);
         modelBuilder.Entity<LeadStatusOption>().HasIndex(s => s.Value).IsUnique();
@@ -303,6 +458,7 @@ public class AppDbContext : DbContext
 public class LeadStatusOption
 {
     public int Id { get; set; }
+    public int? AdminId { get; set; }
     public string Value { get; set; } = "";
 }
 
@@ -310,5 +466,6 @@ public class LeadStatusOption
 public class LeadSourceOption
 {
     public int Id { get; set; }
+    public int? AdminId { get; set; }
     public string Value { get; set; } = "";
 }

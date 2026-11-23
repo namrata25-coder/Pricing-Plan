@@ -21,7 +21,7 @@ namespace CrmLeadManagement.Migrations
                     EnableEmailReminders = table.Column<bool>(type: "boolean", nullable: false),
                     EnableSmsReminders = table.Column<bool>(type: "boolean", nullable: false),
                     DefaultFollowUpType = table.Column<string>(type: "text", nullable: true),
-                    AutoEscalateAfterDaysOverdue = table.Column<int>(type: "integer", nullable: false)
+                    AutoEscalateAfterDaysOverdue = table.Column< int>(type: "integer", nullable: false)
                 },
                 constraints: table =>
                 {

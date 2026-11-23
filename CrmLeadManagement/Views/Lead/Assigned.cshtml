@@ -8,7 +8,7 @@
         <h1>Assigned Leads</h1>
         <p>Track ownership, priority and follow-up dates across your team.</p>
     </div>
-    <div class="action-toolbar">
+    <div class="action-toolbar" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <button class="btn btn-outline"><i class="bi bi-download"></i> Export</button>
         <button type="button" class="btn btn-primary" onclick="openAddLeadModal()"><i class="bi bi-plus-lg"></i> Add Lead</button>
     </div>
@@ -116,6 +116,11 @@
 </div>
 
 @await Html.PartialAsync("_LeadFormModal")
+@await Html.PartialAsync("_QuotaUpgradeModal")
+
+<script>
+    window.leadQuotaReached = @(ViewBag.IsLimitReached == true ? "true" : "false");
+</script>
 
 @functions {
     string StatusBadge(string? status)

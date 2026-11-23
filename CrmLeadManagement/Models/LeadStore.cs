@@ -10,12 +10,33 @@ namespace CrmLeadManagement.Models;
 /// </summary>
 public static class LeadStore
 {
-    /// <summary>All leads, with their call/follow-up/requirement/visit/finance history loaded.</summary>
-    public static List<Lead> Leads => DbAccessor.Db.Leads.ToList();
+    /// <summary>All leads for the current user/tenant, with their call/follow-up/requirement/visit/finance history loaded.</summary>
+    public static List<Lead> Leads
+    {
+        get
+        {
+            var db = DbAccessor.Db;
+            var principal = DbAccessor.CurrentContext?.User;
+            if (principal != null)
+            {
+                return CrmLeadManagement.Security.LeadDataScope.VisibleLeads(db, principal).ToList();
+            }
+            return db.Leads.ToList();
+        }
+    }
 
-    /// <summary>Returns a tracked entity — callers can mutate it (e.g. lead.CallHistory.Add(...))
+    /// <summary>Returns a tracked entity visible to the current user — callers can mutate it
     /// and the change is saved automatically at the end of the request.</summary>
-    public static Lead? GetById(string id) => DbAccessor.Db.Leads.FirstOrDefault(l => l.LeadId == id);
+    public static Lead? GetById(string id)
+    {
+        var db = DbAccessor.Db;
+        var principal = DbAccessor.CurrentContext?.User;
+        if (principal != null)
+        {
+            return CrmLeadManagement.Security.LeadDataScope.GetVisibleLead(db, principal, id);
+        }
+        return db.Leads.FirstOrDefault(l => l.LeadId == id);
+    }
 
     /// <summary>Generates the next sequential Lead ID, e.g. LD-1009, guaranteed unique.</summary>
     public static string NextId()
@@ -114,6 +135,18 @@ public static class LeadStore
             lead.CreatedDate = DateTime.UtcNow.ToString("yyyy-MM-dd");
         if (string.IsNullOrWhiteSpace(lead.AssignedDate))
             lead.AssignedDate = DateTime.UtcNow.ToString("yyyy-MM-dd");
+
+        // SaaS Multi-tenancy: Stamp AdminId and AdminCode from current user if unassigned
+        if (!lead.AdminId.HasValue)
+        {
+            var principal = DbAccessor.CurrentContext?.User;
+            if (principal != null)
+            {
+                var user = CrmLeadManagement.Security.PermissionChecker.GetCurrentUser(DbAccessor.Db, principal);
+                lead.AdminId = user?.GetEffectiveAdminId();
+                lead.AdminCode = user?.AdminCode;
+            }
+        }
 
         DbAccessor.Db.Leads.Add(lead);
         DbAccessor.Db.SaveChanges();

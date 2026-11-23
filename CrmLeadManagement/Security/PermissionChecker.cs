@@ -4,7 +4,7 @@ using CrmLeadManagement.Models;
 namespace CrmLeadManagement.Security;
 
 /// <summary>
-/// Centralized authorization and permission checker for NimbusCRM.
+/// Centralized authorization and permission checker for VisionCRM.
 /// Evaluates module permissions based on RoleMaster definitions and user assignments.
 /// </summary>
 public static class PermissionChecker
@@ -16,7 +16,12 @@ public static class PermissionChecker
         var email = userPrincipal.FindFirst(ClaimTypes.Email)?.Value;
         if (!string.IsNullOrEmpty(email))
         {
-            var user = db.Users.FirstOrDefault(u => u.Email != null && u.Email.ToLower() == email.ToLower());
+            var emailLower = email.ToLower();
+            var altEmailLower = emailLower.Contains("@visioncrm.com") 
+                ? emailLower.Replace("@visioncrm.com", "@nimbuscrm.com") 
+                : (emailLower.Contains("@nimbuscrm.com") ? emailLower.Replace("@nimbuscrm.com", "@visioncrm.com") : emailLower);
+
+            var user = db.Users.FirstOrDefault(u => u.Email != null && (u.Email.ToLower() == emailLower || u.Email.ToLower() == altEmailLower));
             if (user != null) return user;
         }
 
@@ -27,29 +32,82 @@ public static class PermissionChecker
             if (user != null) return user;
         }
 
-        // If user is Admin authenticated principal, construct admin entry
-        if (userPrincipal.IsInRole("Admin"))
+        // If user is Super Admin authenticated principal, construct Super Admin entry
+        if (userPrincipal.IsInRole("Super Admin"))
         {
             return new UserRoleEntry
             {
+                Name = userPrincipal.Identity?.Name ?? "Super Administrator",
+                Email = email ?? "superadmin@visioncrm.com",
+                Role = "Super Admin",
+                AdminId = null,
+                AdminCode = "SAAS-ROOT",
+                CompanyName = "Vision SaaS Platform"
+            };
+        }
+
+        // If user is Admin authenticated principal, construct admin entry
+        if (userPrincipal.IsInRole("Admin"))
+        {
+            var adminIdClaim = userPrincipal.FindFirst("admin_id")?.Value;
+            int.TryParse(adminIdClaim, out var parsedAdminId);
+            var idClaim = userPrincipal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            int.TryParse(idClaim, out var parsedId);
+            var effectiveId = parsedAdminId > 0 ? parsedAdminId : (parsedId > 0 ? parsedId : 1);
+            var adminCodeClaim = userPrincipal.FindFirst("admin_code")?.Value;
+            var compClaim = userPrincipal.FindFirst("company_name")?.Value;
+
+            return new UserRoleEntry
+            {
+                Id = parsedId > 0 ? parsedId : effectiveId,
                 Name = userPrincipal.Identity?.Name ?? "Administrator",
-                Email = email ?? "admin@nimbuscrm.com",
-                Role = "Admin"
+                Email = email ?? "admin@visioncrm.com",
+                Role = "Admin",
+                AdminId = effectiveId,
+                AdminCode = !string.IsNullOrWhiteSpace(adminCodeClaim) ? adminCodeClaim : $"ADM-{effectiveId:D4}",
+                CompanyName = !string.IsNullOrWhiteSpace(compClaim) ? compClaim : "Default Organization"
             };
         }
 
         return null;
     }
 
+    public static bool IsSuperAdmin(ClaimsPrincipal? userPrincipal, UserRoleEntry? user = null)
+    {
+        if (userPrincipal?.IsInRole("Super Admin") == true) return true;
+        if (user != null && string.Equals(user.Role, "Super Admin", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        return false;
+    }
+
+    public static bool IsSuperAdmin(UserRoleEntry? user)
+    {
+        return user != null && string.Equals(user.Role, "Super Admin", StringComparison.OrdinalIgnoreCase);
+    }
+
     public static bool IsAdmin(ClaimsPrincipal? userPrincipal, UserRoleEntry? user = null)
     {
-        if (userPrincipal?.IsInRole("Admin") == true) return true;
+        if (userPrincipal?.IsInRole("Admin") == true || userPrincipal?.IsInRole("Super Admin") == true) return true;
         if (user != null && (string.Equals(user.Role, "Admin", StringComparison.OrdinalIgnoreCase) ||
                              string.Equals(user.Role, "Super Admin", StringComparison.OrdinalIgnoreCase)))
         {
             return true;
         }
         return false;
+    }
+
+    public static bool IsAdmin(UserRoleEntry? user)
+    {
+        return user != null && (string.Equals(user.Role, "Admin", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(user.Role, "Super Admin", StringComparison.OrdinalIgnoreCase));
+    }
+
+    public static int? GetEffectiveAdminId(AppDbContext db, ClaimsPrincipal? userPrincipal, UserRoleEntry? user = null)
+    {
+        var currentUser = user ?? GetCurrentUser(db, userPrincipal);
+        return currentUser?.GetEffectiveAdminId();
     }
 
     public static bool CanViewModule(AppDbContext db, ClaimsPrincipal? userPrincipal, string moduleName)

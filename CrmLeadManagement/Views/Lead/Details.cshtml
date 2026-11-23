@@ -262,48 +262,6 @@
                         </div>
                     </div>
 
-                    <div class="divider-line" style="margin:16px 0;"></div>
-
-                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
-                        <div>
-                            <span style="font-weight:700;font-size:14px;color:var(--ink-800);">Item Specifications</span>
-                            <span style="font-size:12px;color:var(--ink-500);margin-left:8px;">(Add individual items in table format)</span>
-                        </div>
-                        <button type="button" id="addRequirementItemBtn" class="btn btn-primary btn-sm" onclick="addRequirementItem()">
-                            <i class="bi bi-plus-lg"></i> Add Item
-                        </button>
-                    </div>
-
-                    <div class="table-wrap req-table-wrap" style="overflow-x:auto;margin-bottom:18px;border:1px solid var(--line);border-radius:10px;background:#fff;">
-                        <table class="data-table req-items-table" style="width:100%;min-width:1250px;border-collapse:collapse;margin:0;">
-                            <thead>
-                                <tr style="background:var(--ink-50,#f8fafc);border-bottom:1px solid var(--line);">
-                                    <th style="width:55px;text-align:center;font-size:12px;font-weight:700;padding:10px 6px;">S.No.</th>
-                                    <th style="min-width:130px;font-size:12px;font-weight:700;padding:10px 8px;">Category</th>
-                                    <th style="min-width:140px;font-size:12px;font-weight:700;padding:10px 8px;">Item</th>
-                                    <th style="min-width:120px;font-size:12px;font-weight:700;padding:10px 8px;">Location</th>
-                                    <th style="width:80px;min-width:75px;font-size:12px;font-weight:700;padding:10px 4px;text-align:center;">H1</th>
-                                    <th style="width:80px;min-width:75px;font-size:12px;font-weight:700;padding:10px 4px;text-align:center;">H2</th>
-                                    <th style="width:80px;min-width:75px;font-size:12px;font-weight:700;padding:10px 4px;text-align:center;">H3</th>
-                                    <th style="width:80px;min-width:75px;font-size:12px;font-weight:700;padding:10px 4px;text-align:center;">W1</th>
-                                    <th style="width:80px;min-width:75px;font-size:12px;font-weight:700;padding:10px 4px;text-align:center;">W2</th>
-                                    <th style="width:80px;min-width:75px;font-size:12px;font-weight:700;padding:10px 4px;text-align:center;">W3</th>
-                                    <th style="min-width:125px;font-size:12px;font-weight:700;padding:10px 8px;">Types</th>
-                                    <th style="min-width:115px;font-size:12px;font-weight:700;padding:10px 8px;">Topology</th>
-                                    <th style="min-width:130px;font-size:12px;font-weight:700;padding:10px 8px;">Glass</th>
-                                    <th style="min-width:180px;font-size:12px;font-weight:700;padding:10px 8px;text-align:center;">Photo / Image</th>
-                                    <th style="width:45px;text-align:center;padding:10px 4px;"></th>
-                                </tr>
-                            </thead>
-                            <tbody id="requirementItemsTbody">
-                            </tbody>
-                        </table>
-                        <div id="reqItemsEmptyHint" style="padding:22px;text-align:center;color:var(--ink-400);font-size:13px;">
-                            <i class="bi bi-table" style="font-size:20px;display:block;margin-bottom:6px;color:var(--ink-300);"></i>
-                            No items added yet. Click <strong>"Add Item"</strong> to add item rows in table format.
-                        </div>
-                    </div>
-
                     <div class="form-actions" style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px;">
                         <button type="button" class="btn btn-outline" onclick="toggleRequirementForm()">Cancel</button>
                         <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Save Requirement</button>

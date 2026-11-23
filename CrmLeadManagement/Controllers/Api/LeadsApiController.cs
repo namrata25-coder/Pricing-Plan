@@ -37,6 +37,10 @@ public class LeadsApiController : ControllerBase
     /// failure is caught before any response is written, so the caller gets a clean 500 with
     /// a complete JSON body instead of a truncated chunked response.
     /// </summary>
+    private Lead? GetVisibleLead(string id) => LeadDataScope.GetVisibleLead(_db, User, id);
+
+    private IEnumerable<Lead> VisibleLeads() => LeadDataScope.VisibleLeads(_db, User);
+
     private async Task<bool> TrySaveAsync(string action)
     {
         try
@@ -56,7 +60,7 @@ public class LeadsApiController : ControllerBase
     [HttpGet]
     public ActionResult<IEnumerable<Lead>> GetAll([FromQuery] string? status, [FromQuery] string? assignedTo, [FromQuery] string? search)
     {
-        var leads = LeadStore.Leads.AsEnumerable();
+        var leads = VisibleLeads();
 
         if (!string.IsNullOrWhiteSpace(status))
             leads = leads.Where(l => string.Equals(l.LeadStatus, status, StringComparison.OrdinalIgnoreCase));
@@ -81,7 +85,7 @@ public class LeadsApiController : ControllerBase
     [HttpGet("assigned")]
     public ActionResult<IEnumerable<Lead>> GetAssigned()
     {
-        return Ok(LeadStore.Leads.Where(l => !string.IsNullOrWhiteSpace(l.AssignedTo)).ToList());
+        return Ok(VisibleLeads().Where(l => !string.IsNullOrWhiteSpace(l.AssignedTo)).ToList());
     }
 
     // GET /api/leads/count
@@ -90,7 +94,7 @@ public class LeadsApiController : ControllerBase
     [HttpGet("counts")]
     public ActionResult<LeadCountSummaryDto> GetCount([FromQuery] string? assignedTo)
     {
-        var leads = LeadStore.Leads.AsEnumerable();
+        var leads = VisibleLeads();
         if (!string.IsNullOrWhiteSpace(assignedTo))
         {
             leads = leads.Where(l => string.Equals(l.AssignedTo, assignedTo, StringComparison.OrdinalIgnoreCase));
@@ -125,21 +129,37 @@ public class LeadsApiController : ControllerBase
     [HttpGet("{id}")]
     public ActionResult<Lead> GetById(string id)
     {
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
         return Ok(lead);
     }
 
     // POST /api/leads
     [HttpPost]
-    public ActionResult<Lead> Create([FromBody] LeadInputModel input)
+    public async Task<ActionResult<Lead>> Create([FromBody] LeadInputModel input, [FromServices] CrmLeadManagement.Services.ISubscriptionLimitService limitService)
     {
         if (string.IsNullOrWhiteSpace(input.LeadName))
             return BadRequest(new ApiError { Message = "LeadName is required." });
 
+        var authEmail = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value;
+        var currentUser = _db.Users.FirstOrDefault(u => u.Email == authEmail);
+        var effectiveAdminId = currentUser?.GetEffectiveAdminId();
+
+        if (effectiveAdminId.HasValue && effectiveAdminId.Value > 0)
+        {
+            var (allowed, reason, cur, max) = await limitService.CanAddLeadAsync(effectiveAdminId.Value);
+            if (!allowed)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { message = reason, current = cur, max = max });
+            }
+        }
+
         // Ignore any client-supplied LeadId on create; the store always assigns the next id.
         input.LeadId = "";
-        var lead = LeadStore.AddLead(input.ToLead());
+        var lead = input.ToLead();
+        lead.AdminId = effectiveAdminId;
+        lead.AdminCode = currentUser?.AdminCode;
+        lead = LeadStore.AddLead(lead);
         return CreatedAtAction(nameof(GetById), new { id = lead.LeadId }, lead);
     }
 
@@ -147,18 +167,21 @@ public class LeadsApiController : ControllerBase
     [HttpPut("{id}")]
     public ActionResult<Lead> Update(string id, [FromBody] LeadInputModel input)
     {
-        if (LeadStore.GetById(id) is null)
+        if (GetVisibleLead(id) is null)
             return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
 
         input.LeadId = id;
         LeadStore.UpdateLead(input.ToLead());
-        return Ok(LeadStore.GetById(id));
+        return Ok(GetVisibleLead(id));
     }
 
     // DELETE /api/leads/{id}
     [HttpDelete("{id}")]
     public IActionResult Delete(string id)
     {
+        if (GetVisibleLead(id) is null)
+            return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
+
         var removed = LeadStore.DeleteLead(id);
         if (!removed) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
         return NoContent();
@@ -170,7 +193,7 @@ public class LeadsApiController : ControllerBase
     [HttpPost("{id}/call-details")]
     public async Task<IActionResult> AddCall(string id, [FromBody] AddCallRequest request)
     {
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
 
         if (string.IsNullOrWhiteSpace(request.CallDate) || string.IsNullOrWhiteSpace(request.CallTime) || string.IsNullOrWhiteSpace(request.CallStatus))
@@ -212,7 +235,7 @@ public class LeadsApiController : ControllerBase
     [HttpPost("{id}/followups")]
     public async Task<IActionResult> AddFollowUp(string id, [FromBody] AddFollowUpRequest request)
     {
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
 
         if (string.IsNullOrWhiteSpace(request.FollowUpDate) || string.IsNullOrWhiteSpace(request.FollowUpTime) || string.IsNullOrWhiteSpace(request.Status))
@@ -252,7 +275,7 @@ public class LeadsApiController : ControllerBase
     [HttpPost("{id}/visits")]
     public async Task<IActionResult> AddVisit(string id, [FromBody] AddVisitRequest request)
     {
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
 
         if (string.IsNullOrWhiteSpace(request.VisitDate) || string.IsNullOrWhiteSpace(request.VisitTime) || string.IsNullOrWhiteSpace(request.VisitLocation))
@@ -290,7 +313,7 @@ public class LeadsApiController : ControllerBase
     [HttpPost("{id}/requirements")]
     public ActionResult<Lead> AddRequirement(string id, [FromBody] AddRequirementRequest request)
     {
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
 
         if (string.IsNullOrWhiteSpace(request.Title) || string.IsNullOrWhiteSpace(request.Priority) || string.IsNullOrWhiteSpace(request.Status))
@@ -316,7 +339,7 @@ public class LeadsApiController : ControllerBase
         [FromForm] string priority, [FromForm] string? expectedDate, [FromForm] string? budget, [FromForm] string status,
         IFormFile? image)
     {
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
 
         if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(priority) || string.IsNullOrWhiteSpace(status))
@@ -362,7 +385,7 @@ public class LeadsApiController : ControllerBase
     [HttpPost("{id}/assign")]
     public ActionResult<Lead> AssignLead(string id, [FromBody] AssignLeadRequest request)
     {
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
 
         if (string.IsNullOrWhiteSpace(request.AssignedEmployee) || string.IsNullOrWhiteSpace(request.AssignmentDate))
@@ -387,7 +410,7 @@ public class LeadsApiController : ControllerBase
     [HttpGet("{id}/estimations")]
     public ActionResult<IEnumerable<EstimationEntry>> GetEstimations(string id)
     {
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
         return Ok(lead.Estimations);
     }
@@ -399,7 +422,7 @@ public class LeadsApiController : ControllerBase
         if (request is null || request.Items is null || request.Items.Count == 0)
             return BadRequest(new ApiError { Message = "At least one line item is required." });
 
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
 
         var entry = BuildEstimation(lead, LeadStore.NextEstimationNumber(), request);
@@ -424,7 +447,7 @@ public class LeadsApiController : ControllerBase
     [HttpPut("{id}/estimations/{number}")]
     public async Task<IActionResult> UpdateEstimation(string id, string number, [FromBody] EstimationRequest request)
     {
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
 
         var existing = lead.Estimations.FirstOrDefault(e => e.Number == number);
@@ -445,7 +468,7 @@ public class LeadsApiController : ControllerBase
     [HttpDelete("{id}/estimations/{number}")]
     public async Task<IActionResult> DeleteEstimation(string id, string number)
     {
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
 
         var existing = lead.Estimations.FirstOrDefault(e => e.Number == number);
@@ -467,7 +490,7 @@ public class LeadsApiController : ControllerBase
     [HttpGet("{id}/quotations")]
     public ActionResult<IEnumerable<QuotationEntry>> GetQuotations(string id)
     {
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
         return Ok(lead.Quotations);
     }
@@ -476,7 +499,7 @@ public class LeadsApiController : ControllerBase
     [HttpPost("{id}/quotations")]
     public async Task<IActionResult> AddQuotation(string id, [FromBody] QuotationRequest request)
     {
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
 
         var entry = BuildQuotation(lead, LeadStore.NextQuotationNumber(), request);
@@ -492,7 +515,7 @@ public class LeadsApiController : ControllerBase
     [HttpPut("{id}/quotations/{number}")]
     public async Task<IActionResult> UpdateQuotation(string id, string number, [FromBody] QuotationRequest request)
     {
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
 
         var existing = lead.Quotations.FirstOrDefault(q => q.Number == number);
@@ -511,7 +534,7 @@ public class LeadsApiController : ControllerBase
     [HttpDelete("{id}/quotations/{number}")]
     public async Task<IActionResult> DeleteQuotation(string id, string number)
     {
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
 
         var existing = lead.Quotations.FirstOrDefault(q => q.Number == number);
@@ -531,7 +554,7 @@ public class LeadsApiController : ControllerBase
     [HttpGet("{id}/proposals")]
     public ActionResult<IEnumerable<ProposalEntry>> GetProposals(string id)
     {
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
         return Ok(lead.Proposals);
     }
@@ -540,7 +563,7 @@ public class LeadsApiController : ControllerBase
     [HttpPost("{id}/proposals")]
     public async Task<IActionResult> AddProposal(string id, [FromBody] ProposalRequest request)
     {
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
 
         if (string.IsNullOrWhiteSpace(request.Title))
@@ -559,7 +582,7 @@ public class LeadsApiController : ControllerBase
     [HttpPut("{id}/proposals/{number}")]
     public async Task<IActionResult> UpdateProposal(string id, string number, [FromBody] ProposalRequest request)
     {
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
 
         var existing = lead.Proposals.FirstOrDefault(p => p.Number == number);
@@ -578,7 +601,7 @@ public class LeadsApiController : ControllerBase
     [HttpDelete("{id}/proposals/{number}")]
     public async Task<IActionResult> DeleteProposal(string id, string number)
     {
-        var lead = LeadStore.GetById(id);
+        var lead = GetVisibleLead(id);
         if (lead is null) return NotFound(new ApiError { Message = $"Lead '{id}' not found." });
 
         var existing = lead.Proposals.FirstOrDefault(p => p.Number == number);

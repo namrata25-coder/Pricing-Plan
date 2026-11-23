@@ -12,11 +12,13 @@ public class WorkController : Controller
 {
     private readonly AppDbContext _db;
     private readonly IConfiguration? _configuration;
+    private readonly CrmLeadManagement.Services.ISubscriptionLimitService _limitService;
 
-    public WorkController(AppDbContext db, IConfiguration? configuration = null)
+    public WorkController(AppDbContext db, IConfiguration? configuration = null, CrmLeadManagement.Services.ISubscriptionLimitService? limitService = null)
     {
         _db = db;
         _configuration = configuration;
+        _limitService = limitService ?? new CrmLeadManagement.Services.SubscriptionLimitService(db);
     }
 
     private bool CheckPermission(string module, string action = "View")
@@ -115,9 +117,28 @@ public class WorkController : Controller
 
     private List<string> GetEmployeesList()
     {
-        var dbUsers = _db.Users.Where(u => !string.IsNullOrWhiteSpace(u.Name)).Select(u => u.Name!).ToList();
-        if (dbUsers.Any()) return dbUsers.Distinct().OrderBy(n => n).ToList();
-        return SettingsStore.Employees;
+        var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+        if (currentUser == null) return new List<string>();
+
+        if (!WorkDataScope.HasFullAccess(currentUser))
+        {
+            return string.IsNullOrWhiteSpace(currentUser.Name)
+                ? new List<string>()
+                : new List<string> { currentUser.Name };
+        }
+
+        if (WorkDataScope.IsSuperAdmin(currentUser))
+        {
+            return _db.Users.Where(u => !string.IsNullOrWhiteSpace(u.Name)).Select(u => u.Name!).Distinct().OrderBy(n => n).ToList();
+        }
+
+        var effectiveAdminId = currentUser.GetEffectiveAdminId();
+        return _db.Users
+            .Where(u => (u.AdminId == effectiveAdminId || u.Id == currentUser.Id) && !string.IsNullOrWhiteSpace(u.Name))
+            .Select(u => u.Name!)
+            .Distinct()
+            .OrderBy(n => n)
+            .ToList();
     }
 
     private void SetWorkNav(string activePage)
@@ -129,7 +150,7 @@ public class WorkController : Controller
     //  1. WORK → PROJECT PAGE
     // ─────────────────────────────────────────────────────────────────────────
 
-    public async Task<IActionResult> Projects()
+    public async Task<IActionResult> Projects(int? adminId = null)
     {
         if (!CheckPermission("Project", "View"))
         {
@@ -140,7 +161,11 @@ public class WorkController : Controller
         SetWorkNav("WorkProject");
         ViewData["Title"] = "Projects";
 
-        var projects = await _db.WorkProjects
+        var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+        var effectiveAdminFilter = WorkDataScope.IsSuperAdmin(currentUser) ? adminId : null;
+        ViewBag.SelectedAdminId = effectiveAdminFilter;
+
+        var projects = await WorkDataScope.Projects(_db, currentUser, effectiveAdminFilter)
             .Include(p => p.Milestones)
                 .ThenInclude(m => m.Tasks)
             .Include(p => p.Tasks)
@@ -152,12 +177,28 @@ public class WorkController : Controller
             .OrderByDescending(p => p.Id)
             .ToListAsync();
 
+        foreach (var project in projects)
+        {
+            WorkDataScope.RestrictProjectContents(project, currentUser);
+        }
+
         ViewData["Employees"] = GetEmployeesList();
-        ViewData["Clients"]   = await _db.Leads
+        var clientQuery = LeadDataScope.ScopedLeadsQuery(_db, User, effectiveAdminFilter);
+        ViewData["Clients"]   = await clientQuery
             .Select(l => new { l.LeadName, l.CompanyName })
             .Where(l => !string.IsNullOrWhiteSpace(l.LeadName))
             .Distinct()
             .ToListAsync();
+
+        var effectiveAdminId = currentUser?.GetEffectiveAdminId();
+        if (effectiveAdminId.HasValue && effectiveAdminId.Value > 0)
+        {
+            var usage = await _limitService.GetUsageAsync(effectiveAdminId.Value);
+            ViewData["CurrentProjects"] = usage.ProjectsUsed;
+            ViewData["MaxProjects"] = usage.MaxProjects;
+            ViewData["ProjectLimitReached"] = usage.HasReachedProjectLimit;
+            ViewData["UsageSummary"] = usage;
+        }
 
         return View(projects);
     }
@@ -174,7 +215,8 @@ public class WorkController : Controller
             return RedirectToAction(nameof(Projects));
         }
 
-        var project = await _db.WorkProjects
+        var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+        var project = await WorkDataScope.Projects(_db, currentUser)
             .Include(p => p.Milestones)
                 .ThenInclude(m => m.Tasks)
             .Include(p => p.Tasks)
@@ -187,6 +229,7 @@ public class WorkController : Controller
             .FirstOrDefaultAsync(p => p.Id == id);
 
         if (project is null) return RedirectToAction(nameof(Projects));
+        WorkDataScope.RestrictProjectContents(project, currentUser);
 
         SetWorkNav("WorkProject");
         ViewData["Title"] = $"{project.ProjectName} · Project Details";
@@ -214,8 +257,21 @@ public class WorkController : Controller
             return RedirectToAction(nameof(Projects));
         }
 
+        var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+        var effectiveAdminId = currentUser?.GetEffectiveAdminId();
+
         if (id == 0)
         {
+            if (effectiveAdminId.HasValue && effectiveAdminId.Value > 0)
+            {
+                var (allowed, reason, cur, max) = await _limitService.CanAddProjectAsync(effectiveAdminId.Value);
+                if (!allowed)
+                {
+                    TempData["ErrorMessage"] = reason;
+                    return RedirectToAction(nameof(Projects));
+                }
+            }
+
             var p = new WorkProject
             {
                 ProjectCode     = NextProjectCode(),
@@ -232,7 +288,9 @@ public class WorkController : Controller
                 Priority        = string.IsNullOrWhiteSpace(priority) ? "Medium" : priority,
                 Status          = string.IsNullOrWhiteSpace(status) ? "Active" : status,
                 Notes           = notes?.Trim() ?? "",
-                CreatedDate     = DateTime.UtcNow.ToString("yyyy-MM-dd")
+                CreatedDate     = DateTime.UtcNow.ToString("yyyy-MM-dd"),
+                AdminId         = effectiveAdminId,
+                AdminCode       = currentUser?.AdminCode
             };
             _db.WorkProjects.Add(p);
         }
@@ -366,13 +424,26 @@ public class WorkController : Controller
         SetWorkNav("WorkMilestone");
         ViewData["Title"] = "Milestones";
 
-        var milestones = await _db.WorkMilestones
+        var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+        var milestones = await WorkDataScope.Milestones(_db, currentUser)
             .Include(m => m.Project)
             .Include(m => m.Tasks)
             .OrderByDescending(m => m.Id)
             .ToListAsync();
+        if (!WorkDataScope.HasFullAccess(currentUser))
+        {
+            foreach (var milestone in milestones)
+            {
+                milestone.AssignedMembers = WorkDataScope.IsAssignedToSelf(milestone.AssignedMembers, currentUser)
+                    ? currentUser?.Name
+                    : "";
+                milestone.Tasks = milestone.Tasks
+                    .Where(task => WorkDataScope.IsSelf(task.AssignedMember, currentUser))
+                    .ToList();
+            }
+        }
 
-        var projects = await _db.WorkProjects
+        var projects = await WorkDataScope.Projects(_db, currentUser)
             .OrderBy(p => p.ProjectName)
             .ToListAsync();
 
@@ -394,6 +465,8 @@ public class WorkController : Controller
             TempData["ErrorMessage"] = $"Access Denied: You do not have permission to {action.ToLower()} milestones.";
             return RedirectToAction(nameof(Milestones));
         }
+
+        var currentUser = PermissionChecker.GetCurrentUser(_db, User);
 
         amount = Math.Max(0, amount);
         completedAmount = Math.Max(0, Math.Min(completedAmount, amount > 0 ? amount : decimal.MaxValue));
@@ -432,7 +505,8 @@ public class WorkController : Controller
                 AssignedMembers = assignedMembers?.Trim() ?? "",
                 Priority        = string.IsNullOrWhiteSpace(priority) ? "Medium" : priority,
                 Status          = finalStatus,
-                Notes           = notes?.Trim() ?? ""
+                Notes           = notes?.Trim() ?? "",
+                AdminId         = project?.AdminId ?? currentUser?.GetEffectiveAdminId()
             };
             _db.WorkMilestones.Add(m);
         }
@@ -502,7 +576,8 @@ public class WorkController : Controller
         SetWorkNav("WorkTask");
         ViewData["Title"] = "Tasks";
 
-        var query = _db.WorkTasks
+        var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+        var query = WorkDataScope.Tasks(_db, currentUser)
             .Include(t => t.Project)
             .Include(t => t.Milestone)
             .AsQueryable();
@@ -515,8 +590,8 @@ public class WorkController : Controller
 
         var tasks = await query.OrderByDescending(t => t.Id).ToListAsync();
 
-        ViewData["Projects"]   = await _db.WorkProjects.OrderBy(p => p.ProjectName).ToListAsync();
-        ViewData["Milestones"] = await _db.WorkMilestones.OrderBy(m => m.MilestoneName).ToListAsync();
+        ViewData["Projects"]   = await WorkDataScope.Projects(_db, currentUser).OrderBy(p => p.ProjectName).ToListAsync();
+        ViewData["Milestones"] = await WorkDataScope.Milestones(_db, currentUser).OrderBy(m => m.MilestoneName).ToListAsync();
         ViewData["Employees"]  = GetEmployeesList();
         ViewData["FilterProjectId"]   = projectId;
         ViewData["FilterMilestoneId"] = milestoneId;
@@ -537,6 +612,8 @@ public class WorkController : Controller
             TempData["ErrorMessage"] = $"Access Denied: You do not have permission to {action.ToLower()} tasks.";
             return RedirectToAction(nameof(Tasks));
         }
+
+        var currentUser = PermissionChecker.GetCurrentUser(_db, User);
         taskAmount = Math.Max(0, taskAmount);
         completedAmount = Math.Max(0, Math.Min(completedAmount, taskAmount > 0 ? taskAmount : decimal.MaxValue));
         if (milestoneId.HasValue && milestoneId.Value <= 0) milestoneId = null;
@@ -593,7 +670,8 @@ public class WorkController : Controller
                 Priority        = string.IsNullOrWhiteSpace(priority) ? "Medium" : priority,
                 Status          = finalStatus,
                 Notes           = formattedNotes,
-                CreatedDate     = DateTime.UtcNow.ToString("yyyy-MM-dd")
+                CreatedDate     = DateTime.UtcNow.ToString("yyyy-MM-dd"),
+                AdminId         = project?.AdminId ?? currentUser?.GetEffectiveAdminId()
             };
             _db.WorkTasks.Add(t);
         }
@@ -658,6 +736,7 @@ public class WorkController : Controller
         decimal amount, decimal taxRate, decimal discount, string paymentStatus,
         string paymentDate, string notes)
     {
+        var currentUser = PermissionChecker.GetCurrentUser(_db, User);
         var project = await _db.WorkProjects.FindAsync(projectId);
         if (project is null)
             return RedirectToAction(nameof(Projects));
@@ -713,7 +792,8 @@ public class WorkController : Controller
                 PaymentStatus = string.IsNullOrWhiteSpace(paymentStatus) ? "Unpaid" : paymentStatus,
                 PaymentDate   = paymentDate?.Trim() ?? "",
                 Notes         = notes?.Trim() ?? "",
-                CreatedDate   = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm")
+                CreatedDate   = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm"),
+                AdminId       = project?.AdminId ?? currentUser?.GetEffectiveAdminId()
             };
             _db.WorkInvoices.Add(inv);
         }
@@ -758,20 +838,23 @@ public class WorkController : Controller
     [HttpPost]
     public async Task<IActionResult> UploadFile(int projectId, string? description, string? uploadedBy, IFormFile? file)
     {
+        var currentUser = PermissionChecker.GetCurrentUser(_db, User);
         if (file is not null && file.Length > 0)
         {
             var (path, originalName, size, type, error) = await WorkAttachmentService.SaveAsync(file, "files");
             if (string.IsNullOrEmpty(error))
             {
+                var project = await _db.WorkProjects.FindAsync(projectId);
                 var workFile = new WorkFile
                 {
                     ProjectId        = projectId,
+                    AdminId          = project?.AdminId ?? currentUser?.GetEffectiveAdminId(),
                     FileName         = Path.GetFileName(path),
                     OriginalFileName = originalName,
                     FilePath         = path,
                     FileSizeBytes    = size,
                     FileType         = type,
-                    UploadedBy       = string.IsNullOrWhiteSpace(uploadedBy) ? "Ananya Sharma" : uploadedBy.Trim(),
+                    UploadedBy       = string.IsNullOrWhiteSpace(uploadedBy) ? (currentUser?.Name ?? "Admin") : uploadedBy.Trim(),
                     UploadedDate     = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm"),
                     Description      = description?.Trim() ?? ""
                 };
@@ -805,6 +888,8 @@ public class WorkController : Controller
         string logDate, decimal hoursWorked, string? startTime, string? endTime,
         decimal hourlyRate, string billingStatus, string? description, string? notes)
     {
+        var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+        var project = await _db.WorkProjects.FindAsync(projectId);
         hoursWorked = Math.Max(0, hoursWorked);
         hourlyRate = Math.Max(0, hourlyRate);
         var totalCost = hoursWorked * hourlyRate;
@@ -815,6 +900,7 @@ public class WorkController : Controller
             var ts = new WorkTimesheet
             {
                 ProjectId     = projectId,
+                AdminId       = project?.AdminId ?? currentUser?.GetEffectiveAdminId(),
                 TaskId        = taskId,
                 MemberName    = memberName?.Trim() ?? "Unassigned",
                 LogDate       = string.IsNullOrWhiteSpace(logDate) ? DateTime.UtcNow.ToString("yyyy-MM-dd") : logDate.Trim(),
@@ -874,6 +960,8 @@ public class WorkController : Controller
         decimal amount, decimal taxAmount, string expenseDate, string paymentMethod,
         string status, string paidBy, string notes, IFormFile? receipt)
     {
+        var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+        var project = await _db.WorkProjects.FindAsync(projectId);
         amount = Math.Max(0, amount);
         taxAmount = Math.Max(0, taxAmount);
         var totalAmount = amount + taxAmount;
@@ -895,6 +983,7 @@ public class WorkController : Controller
             var exp = new WorkExpense
             {
                 ProjectId       = projectId,
+                AdminId         = project?.AdminId ?? currentUser?.GetEffectiveAdminId(),
                 ExpenseCode     = NextExpenseCode(),
                 ExpenseName     = expenseName?.Trim() ?? "New Expense",
                 Category        = string.IsNullOrWhiteSpace(category) ? "Travel" : category,
@@ -962,12 +1051,15 @@ public class WorkController : Controller
         int noteId, int projectId, string title, string content,
         string category, bool isPinned, string colorTag, string createdBy)
     {
+        var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+        var project = await _db.WorkProjects.FindAsync(projectId);
         var now = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm");
         if (noteId == 0)
         {
             var note = new WorkNote
             {
                 ProjectId        = projectId,
+                AdminId          = project?.AdminId ?? currentUser?.GetEffectiveAdminId(),
                 Title            = title?.Trim() ?? "Untitled Note",
                 Content          = content?.Trim() ?? "",
                 Category         = string.IsNullOrWhiteSpace(category) ? "General" : category,
@@ -1036,7 +1128,8 @@ public class WorkController : Controller
         SetWorkNav("WorkReport");
         ViewData["Title"] = "Work Reports";
 
-        var projects = await _db.WorkProjects
+        var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+        var projects = await WorkDataScope.Projects(_db, currentUser)
             .Include(p => p.Milestones)
                 .ThenInclude(m => m.Tasks)
             .Include(p => p.Tasks)
@@ -1047,6 +1140,11 @@ public class WorkController : Controller
             .Include(p => p.WorkNotes)
             .OrderBy(p => p.ProjectName)
             .ToListAsync();
+
+        foreach (var project in projects)
+        {
+            WorkDataScope.RestrictProjectContents(project, currentUser);
+        }
 
         ViewData["Projects"] = projects;
 
@@ -1078,10 +1176,43 @@ public class WorkController : Controller
         SetWorkNav("WorkMember");
         ViewData["Title"] = "Team Members";
 
-        var users = await _db.Users.OrderBy(u => u.Name).ToListAsync();
-        var projects = await _db.WorkProjects.ToListAsync();
-        var tasks = await _db.WorkTasks.Include(t => t.Project).ToListAsync();
-        var timesheets = await _db.WorkTimesheets.ToListAsync();
+        var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+        var isSuperAdmin = WorkDataScope.IsSuperAdmin(currentUser);
+        var effectiveAdminId = currentUser?.GetEffectiveAdminId();
+
+        var usersQuery = _db.Users.AsQueryable();
+        if (!isSuperAdmin)
+        {
+            if (effectiveAdminId.HasValue)
+            {
+                usersQuery = usersQuery.Where(u => u.AdminId == effectiveAdminId.Value || u.Id == currentUser!.Id);
+            }
+            else
+            {
+                usersQuery = usersQuery.Where(u => u.Id == (currentUser != null ? currentUser.Id : -1));
+            }
+        }
+        if (!WorkDataScope.HasFullAccess(currentUser))
+        {
+            usersQuery = currentUser == null
+                ? usersQuery.Where(_ => false)
+                : usersQuery.Where(u => u.Id == currentUser.Id);
+        }
+
+        var users = await usersQuery.OrderBy(u => u.Name).ToListAsync();
+        var projects = await WorkDataScope.Projects(_db, currentUser).ToListAsync();
+        var tasks = await WorkDataScope.Tasks(_db, currentUser).Include(t => t.Project).ToListAsync();
+        var projectIds = projects.Select(p => p.Id).ToList();
+        var timesheetsQuery = _db.WorkTimesheets.Where(ts => projectIds.Contains(ts.ProjectId));
+        if (!WorkDataScope.HasFullAccess(currentUser))
+        {
+            var currentName = (currentUser?.Name ?? "").ToLower();
+            var currentEmail = (currentUser?.Email ?? "").ToLower();
+            timesheetsQuery = timesheetsQuery.Where(ts => ts.MemberName != null &&
+                ((currentName != "" && ts.MemberName.ToLower() == currentName) ||
+                 (currentEmail != "" && ts.MemberName.ToLower() == currentEmail)));
+        }
+        var timesheets = await timesheetsQuery.ToListAsync();
 
         var memberItems = new List<WorkMemberItem>();
 
@@ -1154,15 +1285,16 @@ public class WorkController : Controller
         bool isAdmin = User.IsInRole("Admin") || (currentUser != null && string.Equals(currentUser.Role, "Admin", StringComparison.OrdinalIgnoreCase));
         var requiredAction = id == 0 ? "Create" : "Edit";
 
+        bool isSuperAdmin = PermissionChecker.IsSuperAdmin(currentUser);
         if (!isAdmin && !PermissionChecker.HasModulePermission(_db, currentUser, "Member", requiredAction))
         {
             TempData["ErrorMessage"] = $"Access Denied: You do not have permission to {requiredAction.ToLower()} members.";
             return RedirectToAction(nameof(Members));
         }
 
-        if (!isAdmin && string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase))
+        if (!isSuperAdmin && string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase))
         {
-            TempData["ErrorMessage"] = "Access Denied: Only administrators can assign the Admin role.";
+            TempData["ErrorMessage"] = "Access Denied: Only Super Admin can assign the Admin role.";
             return RedirectToAction(nameof(Members));
         }
 
@@ -1201,6 +1333,7 @@ public class WorkController : Controller
                     Email = email,
                     Role = role,
                     Status = status,
+                    AdminId = currentUser?.GetEffectiveAdminId(),
                     CreatedAt = DateTime.UtcNow
                 };
                 var pw = !string.IsNullOrWhiteSpace(password) ? password.Trim() : CrmLeadManagement.Security.PasswordGenerator.Generate();
@@ -1312,6 +1445,7 @@ public class WorkController : Controller
                 Email = $"{userName.ToLower().Replace(" ", ".")}@example.com",
                 Role = "Team Member",
                 Status = "Active",
+                AdminId = currentUser?.GetEffectiveAdminId(),
                 ModulePermissions = moduleString
             };
             _db.Users.Add(user);
@@ -1329,7 +1463,8 @@ public class WorkController : Controller
     [HttpGet]
     public async Task<IActionResult> GetMilestonesByProject(int projectId)
     {
-        var milestones = await _db.WorkMilestones
+        var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+        var milestones = await WorkDataScope.Milestones(_db, currentUser)
             .Where(m => m.ProjectId == projectId)
             .OrderBy(m => m.MilestoneName)
             .Select(m => new { m.Id, m.MilestoneCode, m.MilestoneName })

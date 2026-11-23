@@ -7,6 +7,7 @@ namespace CrmLeadManagement.Models;
 public class TaxMaster
 {
     public int Id { get; set; }
+    public int? AdminId { get; set; }
     public string TaxName { get; set; } = "";     // e.g. "GST 18%", "CGST 9%", "SGST 9%", "IGST 18%"
     public string TaxType { get; set; } = "GST";   // GST | CGST | SGST | IGST
     public decimal TaxRate { get; set; }          // e.g. 18.00, 9.00

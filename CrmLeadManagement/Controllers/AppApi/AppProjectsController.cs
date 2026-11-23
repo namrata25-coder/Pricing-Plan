@@ -69,24 +69,10 @@ public class AppProjectsController : ControllerBase
             if (pageSize < 1) pageSize = 20;
             if (pageSize > 100) pageSize = 100;
 
-            var query = _db.WorkProjects
+            var query = WorkDataScope.Projects(_db, currentUser)
                 .Include(p => p.Milestones)
                 .Include(p => p.Tasks)
                 .AsQueryable();
-
-            // Role-based data access restriction
-            if (currentUser != null)
-            {
-                var role = await _db.RoleMasters.FirstOrDefaultAsync(r => r.RoleName == currentUser.Role);
-                if (role != null && string.Equals(role.DataAccess, "OnlyAssigned", StringComparison.OrdinalIgnoreCase))
-                {
-                    var uName = currentUser.Name ?? "";
-                    var uEmail = currentUser.Email ?? "";
-                    query = query.Where(p =>
-                        (p.ProjectManager != null && (p.ProjectManager == uName || p.ProjectManager == uEmail)) ||
-                        (p.AssignedMembers != null && (p.AssignedMembers.Contains(uName) || p.AssignedMembers.Contains(uEmail))));
-                }
-            }
 
             if (!string.IsNullOrWhiteSpace(status))
             {
@@ -122,6 +108,10 @@ public class AppProjectsController : ControllerBase
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
                 .ToListAsync();
+            foreach (var project in items)
+            {
+                WorkDataScope.RestrictProjectContents(project, currentUser);
+            }
 
             var result = new PaginatedResult<WorkProject>
             {
@@ -158,7 +148,7 @@ public class AppProjectsController : ControllerBase
                     AppApiErrorResponse.Fail("You do not have permission to view projects."));
             }
 
-            var project = await _db.WorkProjects
+            var project = await WorkDataScope.Projects(_db, currentUser)
                 .Include(p => p.Milestones)
                     .ThenInclude(m => m.Tasks)
                 .Include(p => p.Tasks)
@@ -170,24 +160,7 @@ public class AppProjectsController : ControllerBase
                 return NotFound(AppApiErrorResponse.Fail($"Project with ID {id} not found."));
             }
 
-            // Role-based data access restriction
-            if (currentUser != null)
-            {
-                var role = await _db.RoleMasters.FirstOrDefaultAsync(r => r.RoleName == currentUser.Role);
-                if (role != null && string.Equals(role.DataAccess, "OnlyAssigned", StringComparison.OrdinalIgnoreCase))
-                {
-                    var uName = currentUser.Name ?? "";
-                    var uEmail = currentUser.Email ?? "";
-                    bool isAssigned = (project.ProjectManager != null && (project.ProjectManager == uName || project.ProjectManager == uEmail)) ||
-                                      (project.AssignedMembers != null && (project.AssignedMembers.Contains(uName) || project.AssignedMembers.Contains(uEmail)));
-                    if (!isAssigned)
-                    {
-                        return StatusCode(StatusCodes.Status403Forbidden,
-                            AppApiErrorResponse.Fail("You are not authorized to access this project."));
-                    }
-                }
-            }
-
+            WorkDataScope.RestrictProjectContents(project, currentUser);
             return Ok(AppApiResponse<WorkProject>.Ok(project, "Project retrieved successfully."));
         }
         catch (Exception ex)

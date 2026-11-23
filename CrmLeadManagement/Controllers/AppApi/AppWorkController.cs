@@ -49,19 +49,9 @@ public class AppWorkController : ControllerBase
                     AppApiErrorResponse.Fail("You do not have permission to view work items."));
             }
 
-            // Role-based data access
-            if (currentUser != null && string.IsNullOrWhiteSpace(assignedUser))
-            {
-                var role = await _db.RoleMasters.FirstOrDefaultAsync(r => r.RoleName == currentUser.Role);
-                if (role != null && string.Equals(role.DataAccess, "OnlyAssigned", StringComparison.OrdinalIgnoreCase))
-                {
-                    assignedUser = currentUser.Name;
-                }
-            }
-
-            var projectsQuery = _db.WorkProjects.AsQueryable();
-            var milestonesQuery = _db.WorkMilestones.Include(m => m.Project).AsQueryable();
-            var tasksQuery = _db.WorkTasks.AsQueryable();
+            var projectsQuery = WorkDataScope.Projects(_db, currentUser);
+            IQueryable<WorkMilestone> milestonesQuery = WorkDataScope.Milestones(_db, currentUser).Include(m => m.Project);
+            var tasksQuery = WorkDataScope.Tasks(_db, currentUser);
 
             if (projectId.HasValue && projectId.Value > 0)
             {
@@ -70,7 +60,7 @@ public class AppWorkController : ControllerBase
                 tasksQuery = tasksQuery.Where(t => t.ProjectId == projectId.Value);
             }
 
-            if (!string.IsNullOrWhiteSpace(assignedUser))
+            if (WorkDataScope.HasFullAccess(currentUser) && !string.IsNullOrWhiteSpace(assignedUser))
             {
                 var u = assignedUser.Trim().ToLower();
                 projectsQuery = projectsQuery.Where(p =>
@@ -217,19 +207,9 @@ public class AppWorkController : ControllerBase
                     AppApiErrorResponse.Fail("You do not have permission to view work statistics."));
             }
 
-            // Role-based data access
-            if (currentUser != null && string.IsNullOrWhiteSpace(assignedUser))
-            {
-                var role = await _db.RoleMasters.FirstOrDefaultAsync(r => r.RoleName == currentUser.Role);
-                if (role != null && string.Equals(role.DataAccess, "OnlyAssigned", StringComparison.OrdinalIgnoreCase))
-                {
-                    assignedUser = currentUser.Name;
-                }
-            }
-
-            var projectsQuery = _db.WorkProjects.AsQueryable();
-            var milestonesQuery = _db.WorkMilestones.Include(m => m.Project).AsQueryable();
-            var tasksQuery = _db.WorkTasks.AsQueryable();
+            var projectsQuery = WorkDataScope.Projects(_db, currentUser);
+            IQueryable<WorkMilestone> milestonesQuery = WorkDataScope.Milestones(_db, currentUser).Include(m => m.Project);
+            var tasksQuery = WorkDataScope.Tasks(_db, currentUser);
 
             if (projectId.HasValue && projectId.Value > 0)
             {
@@ -238,7 +218,7 @@ public class AppWorkController : ControllerBase
                 tasksQuery = tasksQuery.Where(t => t.ProjectId == projectId.Value);
             }
 
-            if (!string.IsNullOrWhiteSpace(assignedUser))
+            if (WorkDataScope.HasFullAccess(currentUser) && !string.IsNullOrWhiteSpace(assignedUser))
             {
                 var u = assignedUser.Trim().ToLower();
                 projectsQuery = projectsQuery.Where(p =>
@@ -396,17 +376,7 @@ public class AppWorkController : ControllerBase
             if (pageSize < 1) pageSize = 20;
             if (pageSize > 100) pageSize = 100;
 
-            // Role-based data access
-            if (currentUser != null && string.IsNullOrWhiteSpace(assignedUser))
-            {
-                var role = await _db.RoleMasters.FirstOrDefaultAsync(r => r.RoleName == currentUser.Role);
-                if (role != null && string.Equals(role.DataAccess, "OnlyAssigned", StringComparison.OrdinalIgnoreCase))
-                {
-                    assignedUser = currentUser.Name;
-                }
-            }
-
-            var query = _db.WorkProjects.AsQueryable();
+            var query = WorkDataScope.Projects(_db, currentUser);
 
             if (projectId.HasValue && projectId.Value > 0)
             {
@@ -418,7 +388,7 @@ public class AppWorkController : ControllerBase
                 query = query.Where(p => p.Status != null && p.Status.ToLower() == status.Trim().ToLower());
             }
 
-            if (!string.IsNullOrWhiteSpace(assignedUser))
+            if (WorkDataScope.HasFullAccess(currentUser) && !string.IsNullOrWhiteSpace(assignedUser))
             {
                 var u = assignedUser.Trim().ToLower();
                 query = query.Where(p =>
@@ -439,53 +409,114 @@ public class AppWorkController : ControllerBase
             var totalCount = await query.CountAsync();
             var totalPages = (int)Math.Ceiling(totalCount / (double)pageSize);
 
-            // Compute summary totals efficiently without loading entire dataset into memory
-            var summaryData = await query.Select(p => new
+            var projectIds = await query.Select(p => p.Id).ToListAsync();
+            var taskSummaries = await WorkDataScope.Tasks(_db, currentUser)
+                .Where(t => projectIds.Contains(t.ProjectId))
+                .GroupBy(t => t.ProjectId)
+                .Select(g => new
+                {
+                    ProjectId = g.Key,
+                    Count = g.Count(),
+                    CompletedCount = g.Count(t => t.Status == "Completed"),
+                    CompletedAmount = g.Sum(t => t.CompletedAmount)
+                })
+                .ToDictionaryAsync(g => g.ProjectId);
+            var milestoneSummaries = await WorkDataScope.Milestones(_db, currentUser)
+                .Where(m => projectIds.Contains(m.ProjectId))
+                .GroupBy(m => m.ProjectId)
+                .Select(g => new
+                {
+                    ProjectId = g.Key,
+                    Count = g.Count(),
+                    CompletedCount = g.Count(m => m.Status == "Completed"),
+                    CompletedAmount = g.Sum(m => m.CompletedAmount)
+                })
+                .ToDictionaryAsync(g => g.ProjectId);
+            var invoiceTotals = await WorkDataScope.Invoices(_db, currentUser)
+                .Where(i => projectIds.Contains(i.ProjectId))
+                .GroupBy(i => i.ProjectId)
+                .Select(g => new { ProjectId = g.Key, Total = g.Sum(i => i.GrandTotal) })
+                .ToDictionaryAsync(g => g.ProjectId, g => g.Total);
+
+            var expenseQuery = _db.WorkExpenses.Where(e => projectIds.Contains(e.ProjectId));
+            var timesheetQuery = _db.WorkTimesheets.Where(t => projectIds.Contains(t.ProjectId));
+            if (!WorkDataScope.HasFullAccess(currentUser))
             {
-                p.Budget,
-                Completed = p.Tasks.Sum(t => (decimal?)t.CompletedAmount) ?? p.Milestones.Sum(m => (decimal?)m.CompletedAmount) ?? 0m,
-                Invoices = p.Invoices.Sum(i => (decimal?)i.GrandTotal) ?? 0m,
-                Expenses = p.Expenses.Sum(e => (decimal?)e.TotalAmount) ?? 0m,
-                Timesheets = p.Timesheets.Sum(t => (decimal?)t.HoursWorked) ?? 0m
-            }).ToListAsync();
+                var name = (currentUser?.Name ?? "").Trim().ToLower();
+                var email = (currentUser?.Email ?? "").Trim().ToLower();
+                expenseQuery = expenseQuery.Where(e => e.PaidBy != null &&
+                    ((name != "" && e.PaidBy.ToLower() == name) || (email != "" && e.PaidBy.ToLower() == email)));
+                timesheetQuery = timesheetQuery.Where(t => t.MemberName != null &&
+                    ((name != "" && t.MemberName.ToLower() == name) || (email != "" && t.MemberName.ToLower() == email)));
+            }
 
-            var totalBudget = summaryData.Sum(x => x.Budget);
-            var totalCompleted = summaryData.Sum(x => x.Completed);
-            var totalPending = Math.Max(0, totalBudget - totalCompleted);
-            var totalInvoices = summaryData.Sum(x => x.Invoices);
-            var totalExpenses = summaryData.Sum(x => x.Expenses);
-            var totalHours = summaryData.Sum(x => x.Timesheets);
+            var expenseTotals = await expenseQuery
+                .GroupBy(e => e.ProjectId)
+                .Select(g => new { ProjectId = g.Key, Total = g.Sum(e => e.TotalAmount) })
+                .ToDictionaryAsync(g => g.ProjectId, g => g.Total);
+            var timesheetTotals = await timesheetQuery
+                .GroupBy(t => t.ProjectId)
+                .Select(g => new { ProjectId = g.Key, Total = g.Sum(t => t.HoursWorked) })
+                .ToDictionaryAsync(g => g.ProjectId, g => g.Total);
 
-            // Paginated items projection
-            var items = await query
+            var projects = await query
                 .OrderByDescending(p => p.Id)
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
-                .Select(p => new AppWorkReportItemDto
+                .ToListAsync();
+
+            var totalBudget = await query.SumAsync(p => p.Budget);
+            var totalCompleted = projectIds.Sum(id =>
+            {
+                if (taskSummaries.TryGetValue(id, out var taskSummary) && taskSummary.Count > 0)
+                {
+                    return taskSummary.CompletedAmount;
+                }
+                return milestoneSummaries.TryGetValue(id, out var milestoneSummary)
+                    ? milestoneSummary.CompletedAmount
+                    : 0m;
+            });
+            var totalPending = Math.Max(0, totalBudget - totalCompleted);
+            var totalInvoices = invoiceTotals.Values.Sum();
+            var totalExpenses = expenseTotals.Values.Sum();
+            var totalHours = timesheetTotals.Values.Sum();
+
+            var items = projects.Select(p =>
+            {
+                var hasTasks = taskSummaries.TryGetValue(p.Id, out var taskSummary) && taskSummary.Count > 0;
+                milestoneSummaries.TryGetValue(p.Id, out var milestoneSummary);
+                var completedAmount = hasTasks
+                    ? taskSummary!.CompletedAmount
+                    : milestoneSummary?.CompletedAmount ?? 0m;
+                return new AppWorkReportItemDto
                 {
                     Id = p.Id,
                     ProjectCode = p.ProjectCode,
                     ProjectName = p.ProjectName,
                     ClientName = p.ClientName,
-                    ProjectManager = p.ProjectManager,
-                    AssignedMembers = p.AssignedMembers,
+                    ProjectManager = WorkDataScope.HasFullAccess(currentUser) || WorkDataScope.IsSelf(p.ProjectManager, currentUser)
+                        ? p.ProjectManager
+                        : "",
+                    AssignedMembers = WorkDataScope.HasFullAccess(currentUser) || WorkDataScope.IsAssignedToSelf(p.AssignedMembers, currentUser)
+                        ? WorkDataScope.HasFullAccess(currentUser) ? p.AssignedMembers : currentUser?.Name
+                        : "",
                     Status = p.Status,
                     Priority = p.Priority,
                     StartDate = p.StartDate,
                     Deadline = p.Deadline,
                     Budget = p.Budget,
-                    CompletedAmount = p.Tasks.Any() ? p.Tasks.Sum(t => t.CompletedAmount) : p.Milestones.Sum(m => m.CompletedAmount),
-                    PendingAmount = Math.Max(0, p.Budget - (p.Tasks.Any() ? p.Tasks.Sum(t => t.CompletedAmount) : p.Milestones.Sum(m => m.CompletedAmount))),
-                    ProgressPercent = p.Budget <= 0 ? 0 : (int)Math.Min(100, Math.Round((p.Tasks.Any() ? p.Tasks.Sum(t => t.CompletedAmount) : p.Milestones.Sum(m => m.CompletedAmount)) / p.Budget * 100)),
-                    MilestonesCount = p.Milestones.Count,
-                    CompletedMilestonesCount = p.Milestones.Count(m => m.Status == "Completed"),
-                    TasksCount = p.Tasks.Count,
-                    CompletedTasksCount = p.Tasks.Count(t => t.Status == "Completed"),
-                    InvoicesGrandTotal = p.Invoices.Sum(i => i.GrandTotal),
-                    ExpensesTotal = p.Expenses.Sum(e => e.TotalAmount),
-                    TimesheetHoursTotal = p.Timesheets.Sum(t => t.HoursWorked)
-                })
-                .ToListAsync();
+                    CompletedAmount = completedAmount,
+                    PendingAmount = Math.Max(0, p.Budget - completedAmount),
+                    ProgressPercent = p.Budget <= 0 ? 0 : (int)Math.Min(100, Math.Round(completedAmount / p.Budget * 100)),
+                    MilestonesCount = milestoneSummary?.Count ?? 0,
+                    CompletedMilestonesCount = milestoneSummary?.CompletedCount ?? 0,
+                    TasksCount = taskSummary?.Count ?? 0,
+                    CompletedTasksCount = taskSummary?.CompletedCount ?? 0,
+                    InvoicesGrandTotal = invoiceTotals.GetValueOrDefault(p.Id),
+                    ExpensesTotal = expenseTotals.GetValueOrDefault(p.Id),
+                    TimesheetHoursTotal = timesheetTotals.GetValueOrDefault(p.Id)
+                };
+            }).ToList();
 
             var response = new AppWorkReportResponseDto
             {

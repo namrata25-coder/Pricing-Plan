@@ -56,7 +56,8 @@ public class TasksApiController : ControllerBase
     {
         try
         {
-            var query = _db.WorkTasks
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var query = WorkDataScope.Tasks(_db, currentUser)
                 .Include(t => t.Project)
                 .Include(t => t.Milestone)
                 .AsQueryable();
@@ -92,8 +93,10 @@ public class TasksApiController : ControllerBase
 
             // Load all project milestones and invoices for dependency evaluation
             var projectIds = tasks.Select(t => t.ProjectId).Distinct().ToList();
-            var allMilestones = await _db.WorkMilestones.Where(m => projectIds.Contains(m.ProjectId)).ToListAsync();
-            var allInvoices = await _db.WorkInvoices.Include(i => i.Payments).Where(i => projectIds.Contains(i.ProjectId)).ToListAsync();
+            var allMilestones = await WorkDataScope.Milestones(_db, currentUser)
+                .Where(m => projectIds.Contains(m.ProjectId)).ToListAsync();
+            var allInvoices = await WorkDataScope.Invoices(_db, currentUser)
+                .Include(i => i.Payments).Where(i => projectIds.Contains(i.ProjectId)).ToListAsync();
 
             var result = tasks.Select(t =>
             {
@@ -166,6 +169,13 @@ public class TasksApiController : ControllerBase
     {
         try
         {
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            if (!WorkDataScope.HasFullAccess(currentUser) &&
+                !await WorkDataScope.Tasks(_db, currentUser).AnyAsync(t => t.ProjectId == projectId))
+            {
+                return NotFound(new { message = $"Project with ID {projectId} not found." });
+            }
+
             var project = await _db.WorkProjects
                 .Include(p => p.Milestones)
                 .Include(p => p.Tasks)
@@ -176,9 +186,15 @@ public class TasksApiController : ControllerBase
             if (project == null)
                 return NotFound(new { message = $"Project with ID {projectId} not found." });
 
-            var milestones = project.Milestones.OrderBy(m => m.Id).ToList();
-            var invoices = project.Invoices.ToList();
-            var allTasks = project.Tasks.OrderBy(t => t.Id).ToList();
+            var visibleMilestoneIds = await WorkDataScope.Milestones(_db, currentUser)
+                .Where(m => m.ProjectId == projectId).Select(m => m.Id).ToListAsync();
+            var visibleInvoiceIds = await WorkDataScope.Invoices(_db, currentUser)
+                .Where(i => i.ProjectId == projectId).Select(i => i.Id).ToListAsync();
+            var milestones = project.Milestones.Where(m => visibleMilestoneIds.Contains(m.Id))
+                .OrderBy(m => m.Id).ToList();
+            var invoices = project.Invoices.Where(i => visibleInvoiceIds.Contains(i.Id)).ToList();
+            var allTasks = await WorkDataScope.Tasks(_db, currentUser)
+                .Where(t => t.ProjectId == projectId).OrderBy(t => t.Id).ToListAsync();
 
             WorkMilestone? targetMilestone = null;
             if (milestoneId.HasValue && milestoneId.Value > 0)
@@ -287,7 +303,8 @@ public class TasksApiController : ControllerBase
     {
         try
         {
-            var t = await _db.WorkTasks
+            var currentUser = PermissionChecker.GetCurrentUser(_db, User);
+            var t = await WorkDataScope.Tasks(_db, currentUser)
                 .Include(x => x.Project)
                 .Include(x => x.Milestone)
                 .FirstOrDefaultAsync(x => x.Id == id);
@@ -295,9 +312,12 @@ public class TasksApiController : ControllerBase
             if (t is null)
                 return NotFound(new { message = $"Task with ID {id} not found." });
 
-            var projectMilestones = await _db.WorkMilestones.Where(m => m.ProjectId == t.ProjectId).ToListAsync();
-            var projectInvoices = await _db.WorkInvoices.Include(i => i.Payments).Where(i => i.ProjectId == t.ProjectId).ToListAsync();
-            var projectTasks = await _db.WorkTasks.Where(x => x.ProjectId == t.ProjectId).ToListAsync();
+            var projectMilestones = await WorkDataScope.Milestones(_db, currentUser)
+                .Where(m => m.ProjectId == t.ProjectId).ToListAsync();
+            var projectInvoices = await WorkDataScope.Invoices(_db, currentUser)
+                .Include(i => i.Payments).Where(i => i.ProjectId == t.ProjectId).ToListAsync();
+            var projectTasks = await WorkDataScope.Tasks(_db, currentUser)
+                .Where(x => x.ProjectId == t.ProjectId).ToListAsync();
 
             var scopeTasks = t.MilestoneId.HasValue
                 ? projectTasks.Where(x => x.MilestoneId == t.MilestoneId).OrderBy(x => x.Id).ToList()

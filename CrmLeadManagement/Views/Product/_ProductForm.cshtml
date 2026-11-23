@@ -1,0 +1,83 @@
+@model ProductInputModel
+<div asp-validation-summary="ModelOnly"
+     style="color:#dc2626;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 12px;margin-bottom:1rem;"></div>
+
+<div style="margin-bottom:1.1rem;">
+    <label asp-for="Name" style="display:block;font-size:13px;font-weight:600;color:var(--ink-700);margin-bottom:6px;">
+        Product Name <span style="color:#ef4444;">*</span>
+    </label>
+    <input asp-for="Name" maxlength="200" placeholder="Enter product name"
+           style="width:100%;padding:9px 12px;border:1.5px solid var(--line,#e5e7eb);border-radius:9px;font-size:13px;" />
+    <span asp-validation-for="Name" style="color:#ef4444;font-size:12px;display:block;"></span>
+</div>
+
+<div style="margin-bottom:1.1rem;">
+    <label asp-for="Description" style="display:block;font-size:13px;font-weight:600;color:var(--ink-700);margin-bottom:6px;">
+        Description <span style="color:#ef4444;">*</span>
+    </label>
+    <textarea asp-for="Description" rows="4" maxlength="4000" placeholder="Describe the product"
+              style="width:100%;padding:9px 12px;border:1.5px solid var(--line,#e5e7eb);border-radius:9px;font-size:13px;resize:vertical;"></textarea>
+    <span asp-validation-for="Description" style="color:#ef4444;font-size:12px;display:block;"></span>
+</div>
+
+<div style="margin-bottom:1.1rem;">
+    <label asp-for="Features" style="display:block;font-size:13px;font-weight:600;color:var(--ink-700);margin-bottom:6px;">
+        Features <span style="color:#ef4444;">*</span>
+    </label>
+    <textarea asp-for="Features" rows="5" maxlength="4000" placeholder="Enter one feature per line"
+              style="width:100%;padding:9px 12px;border:1.5px solid var(--line,#e5e7eb);border-radius:9px;font-size:13px;resize:vertical;"></textarea>
+    <small style="color:var(--ink-400);">Enter one feature per line.</small>
+    <span asp-validation-for="Features" style="color:#ef4444;font-size:12px;display:block;"></span>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.1rem;">
+    <div>
+        <label asp-for="Price" style="display:block;font-size:13px;font-weight:600;color:var(--ink-700);margin-bottom:6px;">
+            Price <span style="color:#ef4444;">*</span>
+        </label>
+        <input asp-for="Price" type="number" min="0" step="0.01" placeholder="0.00"
+               style="width:100%;padding:9px 12px;border:1.5px solid var(--line,#e5e7eb);border-radius:9px;font-size:13px;" />
+        <span asp-validation-for="Price" style="color:#ef4444;font-size:12px;display:block;"></span>
+    </div>
+    <div>
+        <label asp-for="Url" style="display:block;font-size:13px;font-weight:600;color:var(--ink-700);margin-bottom:6px;">
+            Product URL
+        </label>
+        <input asp-for="Url" type="text" maxlength="2048" placeholder="www.example.com/product"
+               style="width:100%;padding:9px 12px;border:1.5px solid var(--line,#e5e7eb);border-radius:9px;font-size:13px;" />
+        <span asp-validation-for="Url" style="color:#ef4444;font-size:12px;display:block;"></span>
+    </div>
+</div>
+
+<div style="margin-bottom:1.1rem;">
+    <label asp-for="Image" style="display:block;font-size:13px;font-weight:600;color:var(--ink-700);margin-bottom:6px;">
+        Product Image
+    </label>
+
+    @if (ViewData["ImagePath"] is string currentImg && !string.IsNullOrEmpty(currentImg))
+    {
+        <img src="@currentImg" alt="Current image"
+             style="height:90px;border-radius:8px;border:1px solid var(--line,#e5e7eb);display:block;margin-bottom:8px;" />
+        <small style="color:var(--ink-400);display:block;margin-bottom:6px;">
+            Nayi image chunenge to purani replace ho jayegi.
+        </small>
+    }
+
+    <input asp-for="Image" type="file" accept=".jpg,.jpeg,.png,.webp"
+           style="width:100%;padding:9px 12px;border:1.5px solid var(--line,#e5e7eb);border-radius:9px;font-size:13px;" />
+    <small style="color:var(--ink-400);">JPG, PNG ya WEBP, max 2 MB</small>
+    <span asp-validation-for="Image" style="color:#ef4444;font-size:12px;display:block;"></span>
+
+    <img id="imagePreview" alt="Preview"
+         style="display:none;height:90px;border-radius:8px;border:1px solid var(--line,#e5e7eb);margin-top:8px;" />
+</div>
+
+<script>
+    document.querySelector('input[type=file][name=Image]').addEventListener('change', function (e) {
+        var file = e.target.files[0];
+        var preview = document.getElementById('imagePreview');
+        if (!file) { preview.style.display = 'none'; return; }
+        preview.src = URL.createObjectURL(file);
+        preview.style.display = 'block';
+    });
+</script>
